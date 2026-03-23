@@ -69,21 +69,37 @@ def _strip_thinking_from_messages(messages):
 class StripThinkingCallback(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         """Runs in the proxy pre-call pipeline — strip thinking blocks."""
+        stream_val = data.get("stream")
+        print(
+            f"[strip_thinking] pre_call_hook: call_type={call_type}, "
+            f"stream={stream_val} (type={type(stream_val).__name__}), "
+            f"model={data.get('model', '?')}",
+            flush=True,
+        )
         if "messages" in data and isinstance(data["messages"], list):
             before_count = len(data["messages"])
             data["messages"] = _strip_thinking_from_messages(data["messages"])
             after_count = len(data["messages"])
             if before_count != after_count:
                 print(
-                    f"[strip_thinking] Removed {before_count - after_count} "
+                    f"[strip_thinking] Stripped {before_count - after_count} "
                     f"thinking-only message(s) ({before_count} -> {after_count})",
                     flush=True,
                 )
         return data
+
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        """Log response type to diagnose streaming."""
+        stream = kwargs.get("stream")
+        resp_type = type(response_obj).__name__
+        print(
+            f"[strip_thinking] success: stream={stream}, response_type={resp_type}",
+            flush=True,
+        )
 
 
 def apply_patch():
     """Called by LITELLM_WORKER_STARTUP_HOOKS during worker init."""
     callback = StripThinkingCallback()
     litellm.callbacks.append(callback)
-    print("[strip_thinking] Registered StripThinkingCallback (async_pre_call_hook)", flush=True)
+    print("[strip_thinking] Registered StripThinkingCallback", flush=True)
