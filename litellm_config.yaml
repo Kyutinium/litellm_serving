@@ -4,11 +4,13 @@ model_list:
       model: hosted_vllm/glm-5-fp8
       api_base: http://localhost:8088/v1
       api_key: EMPTY
+      max_tokens: 16384
   - model_name: GLM-5-FP8
     litellm_params:
       model: hosted_vllm/glm-5-fp8
       api_base: http://localhost:8088/v1
       api_key: EMPTY
+      max_tokens: 16384
 
 litellm_settings:
   ssl_verify: false
