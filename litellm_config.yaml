@@ -2,7 +2,7 @@ model_list:
   - model_name: glm-5-fp8
     litellm_params:
       model: openai/glm-5-fp8
-      api_base: http://localhost:8088/v1
+      api_base: http://host.docker.internal:8088/v1
       api_key: EMPTY  # SGLang doesn't require a real key by default
 
 general_settings:
