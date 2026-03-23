@@ -14,8 +14,6 @@ litellm_settings:
   ssl_verify: false
   set_verbose: true
   drop_params: true
-  callbacks:
-    - strip_thinking.strip_thinking_callback
 
 general_settings:
   master_key: sk-1234

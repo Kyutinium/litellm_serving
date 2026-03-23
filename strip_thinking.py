@@ -1,27 +1,19 @@
 """
-LiteLLM custom callback to strip thinking/reasoning content blocks
-from message history before sending to non-Anthropic backends.
+Worker startup hook to strip thinking/redacted_thinking content blocks
+from messages before they reach non-Anthropic backends (SGLang, vLLM).
 
-SGLang and other OpenAI-compatible servers don't understand Anthropic's
-thinking content blocks ({"type": "thinking", "thinking": "..."}).
-This callback filters them out so only text content reaches the backend.
+The /v1/messages pass-through endpoint bypasses LiteLLM callbacks, so
+we monkey-patch litellm.acompletion() directly. This hook is invoked
+via LITELLM_WORKER_STARTUP_HOOKS before any requests are handled.
 """
 
-from litellm.integrations.custom_logger import CustomLogger
-
-
-class StripThinkingCallback(CustomLogger):
-
-    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
-        if call_type == "completion" and "messages" in data:
-            data["messages"] = _strip_thinking_from_messages(data["messages"])
-        return data
+import litellm
 
 
 def _strip_thinking_from_messages(messages):
     cleaned = []
     for msg in messages:
-        content = msg.get("content")
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
         if isinstance(content, list):
             filtered = [
                 block for block in content
@@ -29,12 +21,25 @@ def _strip_thinking_from_messages(messages):
             ]
             if not filtered:
                 continue
-            msg = {**msg, "content": filtered}
-            # If only one text block remains, flatten to string
-            if len(filtered) == 1 and isinstance(filtered[0], dict) and filtered[0].get("type") == "text":
-                msg = {**msg, "content": filtered[0].get("text", "")}
+            if isinstance(msg, dict):
+                msg = {**msg, "content": filtered}
+                # Flatten single text block to string for compatibility
+                if len(filtered) == 1 and isinstance(filtered[0], dict) and filtered[0].get("type") == "text":
+                    msg = {**msg, "content": filtered[0].get("text", "")}
         cleaned.append(msg)
     return cleaned
 
 
-strip_thinking_callback = StripThinkingCallback()
+_original_acompletion = litellm.acompletion
+
+
+async def _patched_acompletion(*args, **kwargs):
+    if "messages" in kwargs:
+        kwargs["messages"] = _strip_thinking_from_messages(kwargs["messages"])
+    return await _original_acompletion(*args, **kwargs)
+
+
+def apply_patch():
+    """Called by LITELLM_WORKER_STARTUP_HOOKS during worker init."""
+    litellm.acompletion = _patched_acompletion
+    print("[strip_thinking] Patched litellm.acompletion to strip thinking blocks")
