@@ -51,9 +51,13 @@ Received Model Group=GLM-5-FP8
 
 The error traceback passes through `anthropic/experimental_pass_through/messages/handler.py`.
 
-**Cause (suspected):** The claude-wrapper sends requests using the **Anthropic Messages API format** (`/v1/messages`). LiteLLM routes this through its Anthropic pass-through handler instead of the OpenAI chat completions handler, which fails because SGLang only speaks OpenAI format.
+**Cause:** The claude-wrapper sends requests using the **Anthropic Messages API format** (`/v1/messages`). Recent LiteLLM versions (`main-latest`) added an `experimental_pass_through` handler that routes Anthropic-format requests through `responses_adapters/handler.py` → `litellm.aresponses()`. This conversion fails for non-Anthropic backends (like SGLang) that only speak OpenAI chat completions format. This is a [known class of bugs](https://github.com/BerriAI/litellm/issues/11755) in LiteLLM's `/v1/messages` endpoint for non-Anthropic providers.
 
-**Status:** Under investigation. The OpenAI-format `curl` to `/v1/chat/completions` works fine — the issue is specific to the Anthropic API path.
+The `SystemMessage(subtype='api_retry')` seen in claude-wrapper logs is the Claude Agent SDK's built-in retry mechanism reacting to the 500 — it's a symptom, not the root cause.
+
+**Fix:** Changed Dockerfile from `ghcr.io/berriai/litellm:main-latest` (bleeding-edge) to `ghcr.io/berriai/litellm:main-stable`. Rebuild with `docker compose build && docker compose up -d`.
+
+If the issue persists on `main-stable`, pin to a specific version tag (e.g. `v1.63.14-stable`) that predates the experimental pass-through handler. Check your teammate's working version with `docker exec <container> pip show litellm`.
 
 ## Quick Test Commands
 
