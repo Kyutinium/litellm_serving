@@ -51,13 +51,13 @@ Received Model Group=GLM-5-FP8
 
 The error traceback passes through `anthropic/experimental_pass_through/messages/handler.py`.
 
-**Cause:** The claude-wrapper sends requests using the **Anthropic Messages API format** (`/v1/messages`). Recent LiteLLM versions (`main-latest`) added an `experimental_pass_through` handler that routes Anthropic-format requests through `responses_adapters/handler.py` → `litellm.aresponses()`. This conversion fails for non-Anthropic backends (like SGLang) that only speak OpenAI chat completions format. This is a [known class of bugs](https://github.com/BerriAI/litellm/issues/11755) in LiteLLM's `/v1/messages` endpoint for non-Anthropic providers.
+**Cause:** The claude-wrapper sends requests using the **Anthropic Messages API format** (`/v1/messages`). LiteLLM's `experimental_pass_through` handler converts these to the **Responses API** format and calls `litellm.aresponses()`. With the `openai/` model prefix, LiteLLM assumes the backend is actual OpenAI (which supports `/v1/responses`), so it tries to hit `http://localhost:8088/v1/responses` on SGLang — which doesn't exist, causing the 500.
 
 The `SystemMessage(subtype='api_retry')` seen in claude-wrapper logs is the Claude Agent SDK's built-in retry mechanism reacting to the 500 — it's a symptom, not the root cause.
 
-**Fix:** Changed Dockerfile from `ghcr.io/berriai/litellm:main-latest` (bleeding-edge) to `ghcr.io/berriai/litellm:main-stable`. Rebuild with `docker compose build && docker compose up -d`.
+**Fix:** Changed model prefix from `openai/glm-5-fp8` to `hosted_vllm/glm-5-fp8` in `litellm_config.yaml`. The `hosted_vllm/` prefix tells LiteLLM the backend is an OpenAI-compatible server (like SGLang/vLLM) that only supports chat completions, forcing it to use the chat completions fallback path instead of the Responses API.
 
-If the issue persists on `main-stable`, pin to a specific version tag (e.g. `v1.63.14-stable`) that predates the experimental pass-through handler. Check your teammate's working version with `docker exec <container> pip show litellm`.
+Rebuild with `docker compose build && docker compose up -d`.
 
 ## Quick Test Commands
 
