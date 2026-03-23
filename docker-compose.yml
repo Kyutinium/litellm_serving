@@ -1,9 +1,6 @@
 services:
   litellm:
     build: .
-    ports:
-      - "3999:3999"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    network_mode: host
     environment:
       - LITELLM_MASTER_KEY=sk-1234
