@@ -5,5 +5,4 @@ model_list:
       api_base: http://localhost:30000/v1
       api_key: EMPTY  # SGLang doesn't require a real key by default
 
-general_settings:
-  master_key: sk-litellm-master-key  # change this
+general_settings: {}
