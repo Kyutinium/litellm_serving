@@ -31,12 +31,12 @@
 model_list:
   - model_name: glm-5-fp8
     litellm_params:
-      model: openai/glm-5-fp8
+      model: hosted_vllm/glm-5-fp8
       api_base: http://localhost:8088/v1
       api_key: EMPTY
   - model_name: GLM-5-FP8
     litellm_params:
-      model: openai/glm-5-fp8
+      model: hosted_vllm/glm-5-fp8
       api_base: http://localhost:8088/v1
       api_key: EMPTY
 ```
@@ -56,6 +56,24 @@ The error traceback passes through `anthropic/experimental_pass_through/messages
 The `SystemMessage(subtype='api_retry')` seen in claude-wrapper logs is the Claude Agent SDK's built-in retry mechanism reacting to the 500 — it's a symptom, not the root cause.
 
 **Fix:** Changed model prefix from `openai/glm-5-fp8` to `hosted_vllm/glm-5-fp8` in `litellm_config.yaml`. The `hosted_vllm/` prefix tells LiteLLM the backend is an OpenAI-compatible server (like SGLang/vLLM) that only supports chat completions, forcing it to use the chat completions fallback path instead of the Responses API.
+
+Rebuild with `docker compose build && docker compose up -d`.
+
+### 4. BadRequestError: Thinking blocks in message content
+
+**Symptom:**
+```
+litellm.exceptions.BadRequestError: Hosted_vllmException - 19 validation errors:
+'Input should be a valid string', 'input': [{'type': 'thinking', 'thinking': '...'}]
+```
+
+**Cause:** Multi-turn conversations include previous assistant messages with Anthropic `thinking` content blocks (`{"type": "thinking", "thinking": "..."}`). LiteLLM's Anthropic-to-ChatCompletions adapter doesn't strip these blocks, so SGLang receives them as-is and rejects them (it expects string content, not content block arrays).
+
+**Fix:**
+1. Added `drop_params: true` to `litellm_settings` to drop unsupported top-level parameters (like `output_config`, `thinking`)
+2. Created `strip_thinking.py` — a custom LiteLLM callback that filters thinking/redacted_thinking blocks from message content arrays before they reach the backend
+3. Registered the callback in `litellm_config.yaml` under `litellm_settings.callbacks`
+4. Updated Dockerfile to copy `strip_thinking.py` into the container
 
 Rebuild with `docker compose build && docker compose up -d`.
 

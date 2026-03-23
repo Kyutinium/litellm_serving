@@ -1,6 +1,7 @@
 FROM ghcr.io/berriai/litellm:main-stable
 
 COPY litellm_config.yaml /app/config.yaml
+COPY strip_thinking.py /app/strip_thinking.py
 
 EXPOSE 3999
 
