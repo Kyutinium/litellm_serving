@@ -9,6 +9,7 @@ This avoids wrapping acompletion and preserves streaming behavior.
 Invoked via LITELLM_WORKER_STARTUP_HOOKS before any requests are handled.
 """
 
+import inspect
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
 
@@ -66,6 +67,29 @@ def _strip_thinking_from_messages(messages):
     return cleaned
 
 
+def _patch_proxy_streaming_debug():
+    """Monkey-patch the proxy's anthropic_messages response path to log streaming decisions."""
+    try:
+        from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
+
+        original_is_streaming_response = ProxyBaseLLMRequestProcessing._is_streaming_response
+
+        def debug_is_streaming_response(self, response):
+            result = original_is_streaming_response(self, response)
+            print(
+                f"[DEBUG-STREAM] _is_streaming_response: type={type(response).__name__}, "
+                f"is_asyncgen={inspect.isasyncgen(response)}, "
+                f"result={result}",
+                flush=True,
+            )
+            return result
+
+        ProxyBaseLLMRequestProcessing._is_streaming_response = debug_is_streaming_response
+        print("[DEBUG-STREAM] Patched _is_streaming_response for debug logging", flush=True)
+    except Exception as e:
+        print(f"[DEBUG-STREAM] Failed to patch: {e}", flush=True)
+
+
 class StripThinkingCallback(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         """Runs in the proxy pre-call pipeline — strip thinking blocks."""
@@ -103,3 +127,4 @@ def apply_patch():
     callback = StripThinkingCallback()
     litellm.callbacks.append(callback)
     print("[strip_thinking] Registered StripThinkingCallback", flush=True)
+    _patch_proxy_streaming_debug()
