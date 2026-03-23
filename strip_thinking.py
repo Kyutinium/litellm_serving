@@ -2,14 +2,13 @@
 Strip thinking/redacted_thinking content blocks from messages before
 they reach non-Anthropic backends (SGLang, vLLM).
 
-Uses LiteLLM's CustomLogger async_pre_call_hook, which runs in the proxy's
-pre-call pipeline — before the request flows to the adapter/acompletion.
-This avoids wrapping acompletion and preserves streaming behavior.
+Also patches LiteLLM's Anthropic streaming adapter to emit text_delta
+instead of thinking_delta for reasoning_content, fixing a format mismatch
+that prevents the Claude SDK from streaming.
 
 Invoked via LITELLM_WORKER_STARTUP_HOOKS before any requests are handled.
 """
 
-import inspect
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
 
@@ -67,39 +66,45 @@ def _strip_thinking_from_messages(messages):
     return cleaned
 
 
-def _patch_proxy_streaming_debug():
-    """Monkey-patch the proxy's anthropic_messages response path to log streaming decisions."""
+def _patch_streaming_thinking_delta():
+    """Patch the Anthropic adapter to emit text_delta instead of thinking_delta.
+
+    LiteLLM's adapter has a bug: the initial content_block_start is always
+    type="text", but reasoning_content from models like GLM/DeepSeek gets
+    converted to thinking_delta. This mismatch breaks the Claude SDK's
+    streaming parser. Fix: convert thinking_delta → text_delta so all
+    content is consistent with the text block type.
+    """
     try:
-        from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
+        from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
+            LiteLLMAnthropicMessagesAdapter,
+        )
+        from litellm.types.llms.anthropic import ContentTextBlockDelta
 
-        original_is_streaming_response = ProxyBaseLLMRequestProcessing._is_streaming_response
+        original = LiteLLMAnthropicMessagesAdapter._translate_streaming_openai_chunk_to_anthropic
 
-        def debug_is_streaming_response(self, response):
-            result = original_is_streaming_response(self, response)
-            print(
-                f"[DEBUG-STREAM] _is_streaming_response: type={type(response).__name__}, "
-                f"is_asyncgen={inspect.isasyncgen(response)}, "
-                f"result={result}",
-                flush=True,
-            )
-            return result
+        def patched_translate(self, choices):
+            type_of_content, delta = original(self, choices)
+            # Convert thinking_delta → text_delta to match the "text" content block
+            if type_of_content == "thinking_delta":
+                thinking_text = getattr(delta, "thinking", "") or delta.get("thinking", "")
+                return "text_delta", ContentTextBlockDelta(
+                    type="text_delta", text=thinking_text
+                )
+            if type_of_content == "signature_delta":
+                # Drop signature deltas — not meaningful for non-Anthropic models
+                return "text_delta", ContentTextBlockDelta(type="text_delta", text="")
+            return type_of_content, delta
 
-        ProxyBaseLLMRequestProcessing._is_streaming_response = debug_is_streaming_response
-        print("[DEBUG-STREAM] Patched _is_streaming_response for debug logging", flush=True)
+        LiteLLMAnthropicMessagesAdapter._translate_streaming_openai_chunk_to_anthropic = patched_translate
+        print("[strip_thinking] Patched thinking_delta → text_delta in streaming adapter", flush=True)
     except Exception as e:
-        print(f"[DEBUG-STREAM] Failed to patch: {e}", flush=True)
+        print(f"[strip_thinking] Failed to patch streaming adapter: {e}", flush=True)
 
 
 class StripThinkingCallback(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         """Runs in the proxy pre-call pipeline — strip thinking blocks."""
-        stream_val = data.get("stream")
-        print(
-            f"[strip_thinking] pre_call_hook: call_type={call_type}, "
-            f"stream={stream_val} (type={type(stream_val).__name__}), "
-            f"model={data.get('model', '?')}",
-            flush=True,
-        )
         if "messages" in data and isinstance(data["messages"], list):
             before_count = len(data["messages"])
             data["messages"] = _strip_thinking_from_messages(data["messages"])
@@ -112,19 +117,10 @@ class StripThinkingCallback(CustomLogger):
                 )
         return data
 
-    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
-        """Log response type to diagnose streaming."""
-        stream = kwargs.get("stream")
-        resp_type = type(response_obj).__name__
-        print(
-            f"[strip_thinking] success: stream={stream}, response_type={resp_type}",
-            flush=True,
-        )
-
 
 def apply_patch():
     """Called by LITELLM_WORKER_STARTUP_HOOKS during worker init."""
     callback = StripThinkingCallback()
     litellm.callbacks.append(callback)
     print("[strip_thinking] Registered StripThinkingCallback", flush=True)
-    _patch_proxy_streaming_debug()
+    _patch_streaming_thinking_delta()
