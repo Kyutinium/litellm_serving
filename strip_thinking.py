@@ -2,14 +2,13 @@
 Strip thinking/redacted_thinking content blocks from messages before
 they reach non-Anthropic backends (SGLang, vLLM).
 
-Two-layer approach:
-1. Monkey-patch litellm.acompletion to strip before the call
-2. Register a CustomLogger callback as a fallback
+Uses LiteLLM's CustomLogger async_pre_call_hook, which runs in the proxy's
+pre-call pipeline — before the request flows to the adapter/acompletion.
+This avoids wrapping acompletion and preserves streaming behavior.
 
 Invoked via LITELLM_WORKER_STARTUP_HOOKS before any requests are handled.
 """
 
-import json
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
 
@@ -39,7 +38,6 @@ def _strip_thinking_from_messages(messages):
                 )
             ]
             if not filtered:
-                # Entire message was thinking — skip it
                 continue
             # Flatten single text block to plain string
             if (
@@ -68,71 +66,24 @@ def _strip_thinking_from_messages(messages):
     return cleaned
 
 
-def _log_messages(tag, messages):
-    """Debug-log message structure (types only, no content)."""
-    summary = []
-    for i, msg in enumerate(messages):
-        if isinstance(msg, dict):
-            role = msg.get("role", "?")
-            content = msg.get("content")
-        else:
-            role = getattr(msg, "role", "?")
-            content = getattr(msg, "content", None)
-        if isinstance(content, list):
-            types = []
-            for block in content:
-                if isinstance(block, dict):
-                    types.append(block.get("type", "?"))
-                else:
-                    types.append(getattr(block, "type", str(type(block).__name__)))
-            summary.append(f"  [{i}] role={role} content=[{', '.join(types)}]")
-        elif isinstance(content, str):
-            summary.append(f"  [{i}] role={role} content=str({len(content)} chars)")
-        else:
-            summary.append(f"  [{i}] role={role} content={type(content).__name__}")
-    print(f"[strip_thinking] {tag}:\n" + "\n".join(summary), flush=True)
-
-
-# ---------------------------------------------------------------------------
-# Layer 1: Monkey-patch litellm.acompletion
-# ---------------------------------------------------------------------------
-
-_original_acompletion = litellm.acompletion
-
-
-async def _patched_acompletion(*args, **kwargs):
-    messages = kwargs.get("messages")
-    if messages and isinstance(messages, list):
-        _log_messages("BEFORE strip (acompletion)", messages)
-        kwargs["messages"] = _strip_thinking_from_messages(messages)
-        _log_messages("AFTER strip (acompletion)", kwargs["messages"])
-    return await _original_acompletion(*args, **kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Layer 2: CustomLogger callback (fallback)
-# ---------------------------------------------------------------------------
-
 class StripThinkingCallback(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+        """Runs in the proxy pre-call pipeline — strip thinking blocks."""
         if "messages" in data and isinstance(data["messages"], list):
-            _log_messages("BEFORE strip (callback)", data["messages"])
+            before_count = len(data["messages"])
             data["messages"] = _strip_thinking_from_messages(data["messages"])
-            _log_messages("AFTER strip (callback)", data["messages"])
+            after_count = len(data["messages"])
+            if before_count != after_count:
+                print(
+                    f"[strip_thinking] Removed {before_count - after_count} "
+                    f"thinking-only message(s) ({before_count} -> {after_count})",
+                    flush=True,
+                )
         return data
 
 
-# ---------------------------------------------------------------------------
-# Startup hook
-# ---------------------------------------------------------------------------
-
 def apply_patch():
     """Called by LITELLM_WORKER_STARTUP_HOOKS during worker init."""
-    # Layer 1: patch acompletion
-    litellm.acompletion = _patched_acompletion
-    print("[strip_thinking] Patched litellm.acompletion", flush=True)
-
-    # Layer 2: register callback
     callback = StripThinkingCallback()
     litellm.callbacks.append(callback)
-    print("[strip_thinking] Registered StripThinkingCallback", flush=True)
+    print("[strip_thinking] Registered StripThinkingCallback (async_pre_call_hook)", flush=True)
