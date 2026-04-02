@@ -87,9 +87,9 @@ def _patch_streaming_thinking_delta():
             type_of_content, delta = original(self, choices)
             # Convert thinking_delta → text_delta to match the "text" content block
             if type_of_content == "thinking_delta":
-                thinking_text = getattr(delta, "thinking", "") or delta.get("thinking", "")
+                # Drop reasoning content entirely — don't forward to client
                 return "text_delta", ContentTextBlockDelta(
-                    type="text_delta", text=thinking_text
+                    type="text_delta", text=""
                 )
             if type_of_content == "signature_delta":
                 # Drop signature deltas — not meaningful for non-Anthropic models
