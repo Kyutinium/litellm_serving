@@ -5,6 +5,7 @@ COPY strip_thinking.py /app/strip_thinking.py
 
 ENV LITELLM_WORKER_STARTUP_HOOKS=strip_thinking:apply_patch
 ENV PYTHONPATH=/app
+ENV THINK_OUTPUT_MODE=none
 
 EXPOSE 3999
 
