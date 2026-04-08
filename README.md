@@ -101,8 +101,14 @@ model_list:
       merge_reasoning_content_in_choices: true
 ```
 
+- `model_name` — 클라이언트가 요청 시 사용하는 모델 이름
+- `model` — litellm이 사용하는 내부 모델 식별자 (prefix로 백엔드 타입 지정: `hosted_vllm/`, `openai/` 등)
+- `api_base` — 모델이 서빙되고 있는 백엔드 서버 URL. **실제 모델 서버 주소에 맞게 반드시 수정해야 합니다**
+- `max_tokens` — 최대 출력 토큰 수
 - `merge_reasoning_content_in_choices: true` — OpenAI 형식(`/v1/chat/completions`) 응답에서 reasoning_content를 content에 병합
-- `api_base` — 백엔드 모델 서버 주소
+
+> **주의**: `api_base`는 실제로 모델이 서빙되고 있는 서버의 주소와 포트로 변경해야 합니다.
+> 예를 들어 SGLang이 `http://192.168.1.100:8088/v1`에서 실행 중이라면 해당 URL로 설정하세요.
 
 ---
 
