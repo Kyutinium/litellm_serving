@@ -13,6 +13,20 @@ model_list:
       api_key: EMPTY
       max_tokens: 131072
       merge_reasoning_content_in_choices: true
+  - model_name: glm-5.1-fp8
+    litellm_params:
+      model: hosted_vllm/glm-5.1-fp8
+      api_base: http://localhost:8089/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: GLM-5.1-FP8
+    litellm_params:
+      model: hosted_vllm/glm-5.1-fp8
+      api_base: http://localhost:8089/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
   - model_name: Qwen3.5-122B-A10B
     litellm_params:
       model: openai/Qwen3.5-122B-A10B
