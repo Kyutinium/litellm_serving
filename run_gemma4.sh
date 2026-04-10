@@ -1,11 +1,11 @@
 #!/bin/bash
-# Gemma-4-31B-IT vLLM Docker Serving Script
+# Gemma-4-31B-IT vLLM 서버 실행
 #
 # Usage:
-#   bash start_gemma4.sh                    # 기본값 (GPU 2장, port 8090)
-#   TENSOR_PARALLEL=4 bash start_gemma4.sh  # GPU 4장
-#   PORT=8091 bash start_gemma4.sh          # 포트 변경
-#   GPU_IDS='"device=0,1"' bash start_gemma4.sh  # 특정 GPU 지정
+#   bash run_gemma4.sh                              # 기본값 (GPU 2장, port 8090)
+#   TENSOR_PARALLEL=4 bash run_gemma4.sh            # GPU 4장
+#   PORT=8091 bash run_gemma4.sh                    # 포트 변경
+#   GPU_IDS='"device=0,1"' bash run_gemma4.sh       # 특정 GPU 지정
 
 set -euo pipefail
 
@@ -21,14 +21,13 @@ GPU_IDS="${GPU_IDS:-all}"
 
 # 기존 컨테이너 정리
 if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-    echo "Stopping existing container: ${CONTAINER_NAME}"
+    echo "Removing existing container: ${CONTAINER_NAME}"
     docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1
 fi
 
 echo "============================================"
-echo " Gemma-4-31B-IT vLLM Server (Docker)"
+echo " Gemma-4-31B-IT vLLM Server"
 echo "============================================"
-echo " Image:         ${IMAGE}"
 echo " Container:     ${CONTAINER_NAME}"
 echo " Model:         ${MODEL_PATH}"
 echo " Port:          ${PORT}"
