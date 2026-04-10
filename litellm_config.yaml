@@ -41,6 +41,18 @@ model_list:
       api_key: EMPTY
       max_tokens: 131072
       merge_reasoning_content_in_choices: true
+  - model_name: gemma-4-31b-it
+    litellm_params:
+      model: hosted_vllm/gemma-4-31b-it
+      api_base: http://localhost:8090/v1
+      api_key: EMPTY
+      max_tokens: 8192
+  - model_name: Gemma-4-31B-IT
+    litellm_params:
+      model: hosted_vllm/gemma-4-31b-it
+      api_base: http://localhost:8090/v1
+      api_key: EMPTY
+      max_tokens: 8192
 
 litellm_settings:
   ssl_verify: false
