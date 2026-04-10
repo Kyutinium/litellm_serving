@@ -14,7 +14,7 @@ IMAGE="${IMAGE:-vllm/vllm-openai:gemma4}"
 MODEL_PATH="${MODEL_PATH:-/home/kyvhyvn.shim/to/public/checkpoints/gemma/gemma-4-31B-it}"
 PORT="${PORT:-8090}"
 TENSOR_PARALLEL="${TENSOR_PARALLEL:-2}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-262144}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 DTYPE="${DTYPE:-bfloat16}"
 GPU_IDS="${GPU_IDS:-all}"
@@ -41,7 +41,7 @@ echo "============================================"
 exec docker run \
     --name "${CONTAINER_NAME}" \
     --gpus "${GPU_IDS}" \
-    --shm-size 16g \
+    --ipc=host \
     -v "${MODEL_PATH}:/model" \
     -p "${PORT}:8000" \
     --restart unless-stopped \
