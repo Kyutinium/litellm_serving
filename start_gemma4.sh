@@ -1,40 +1,53 @@
 #!/bin/bash
-# Gemma-4-31B-IT vLLM Serving Script
-#
-# Prerequisites:
-#   vLLM nightly or docker image vllm/vllm-openai:gemma4 (stable 0.19.0 has transformers conflict)
-#   Install nightly: uv pip install -U vllm --pre --extra-index-url https://wheels.vllm.ai/nightly/cu129
-#   Model checkpoint at /home/kyvhyvn.shim/to/public/checkpoints/gemma/gemma-4-31B-it
+# Gemma-4-31B-IT vLLM Docker Serving Script
 #
 # Usage:
 #   bash start_gemma4.sh                    # 기본값 (GPU 2장, port 8090)
 #   TENSOR_PARALLEL=4 bash start_gemma4.sh  # GPU 4장
 #   PORT=8091 bash start_gemma4.sh          # 포트 변경
+#   GPU_IDS='"device=0,1"' bash start_gemma4.sh  # 특정 GPU 지정
 
 set -euo pipefail
 
-MODEL_ID="${MODEL_PATH:-/home/kyvhyvn.shim/to/public/checkpoints/gemma/gemma-4-31B-it}"
+CONTAINER_NAME="${CONTAINER_NAME:-gemma4-vllm}"
+IMAGE="${IMAGE:-vllm/vllm-openai:gemma4}"
+MODEL_PATH="${MODEL_PATH:-/home/kyvhyvn.shim/to/public/checkpoints/gemma/gemma-4-31B-it}"
 PORT="${PORT:-8090}"
 TENSOR_PARALLEL="${TENSOR_PARALLEL:-2}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 DTYPE="${DTYPE:-bfloat16}"
+GPU_IDS="${GPU_IDS:-all}"
+
+# 기존 컨테이너 정리
+if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    echo "Stopping existing container: ${CONTAINER_NAME}"
+    docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1
+fi
 
 echo "============================================"
-echo " Gemma-4-31B-IT vLLM Server"
+echo " Gemma-4-31B-IT vLLM Server (Docker)"
 echo "============================================"
-echo " Model:         ${MODEL_ID}"
+echo " Image:         ${IMAGE}"
+echo " Container:     ${CONTAINER_NAME}"
+echo " Model:         ${MODEL_PATH}"
 echo " Port:          ${PORT}"
 echo " TP:            ${TENSOR_PARALLEL}"
 echo " Max Model Len: ${MAX_MODEL_LEN}"
 echo " GPU Mem Util:  ${GPU_MEMORY_UTILIZATION}"
 echo " Dtype:         ${DTYPE}"
+echo " GPUs:          ${GPU_IDS}"
 echo "============================================"
 
-exec python -m vllm.entrypoints.openai.api_server \
-    --model "${MODEL_ID}" \
-    --port "${PORT}" \
-    --host 0.0.0.0 \
+exec docker run \
+    --name "${CONTAINER_NAME}" \
+    --gpus "${GPU_IDS}" \
+    --shm-size 16g \
+    -v "${MODEL_PATH}:/model" \
+    -p "${PORT}:8000" \
+    --restart unless-stopped \
+    "${IMAGE}" \
+    --model /model \
     --tensor-parallel-size "${TENSOR_PARALLEL}" \
     --max-model-len "${MAX_MODEL_LEN}" \
     --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
