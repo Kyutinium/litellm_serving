@@ -3,7 +3,7 @@
 #
 # Prerequisites:
 #   pip install vllm>=0.8.5
-#   huggingface-cli login  (HF token with access to google/gemma-4-31B-it)
+#   Model checkpoint at /home/kyvhyvn.shim/to/public/checkpoints/gemma/gemma-4-31B-it
 #
 # Usage:
 #   bash start_gemma4.sh                    # 기본값 (GPU 2장, port 8090)
@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-MODEL_ID="google/gemma-4-31B-it"
+MODEL_ID="${MODEL_PATH:-/home/kyvhyvn.shim/to/public/checkpoints/gemma/gemma-4-31B-it}"
 PORT="${PORT:-8090}"
 TENSOR_PARALLEL="${TENSOR_PARALLEL:-2}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
