@@ -2,7 +2,8 @@
 # Gemma-4-31B-IT vLLM Serving Script
 #
 # Prerequisites:
-#   pip install vllm>=0.8.5
+#   vLLM nightly or docker image vllm/vllm-openai:gemma4 (stable 0.19.0 has transformers conflict)
+#   Install nightly: uv pip install -U vllm --pre --extra-index-url https://wheels.vllm.ai/nightly/cu129
 #   Model checkpoint at /home/kyvhyvn.shim/to/public/checkpoints/gemma/gemma-4-31B-it
 #
 # Usage:
@@ -40,4 +41,5 @@ exec python -m vllm.entrypoints.openai.api_server \
     --dtype "${DTYPE}" \
     --trust-remote-code \
     --served-model-name "gemma-4-31b-it" \
+    --limit-mm-per-prompt image=0,audio=0 \
     --api-key EMPTY
