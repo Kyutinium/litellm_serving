@@ -53,5 +53,5 @@ exec docker run \
     --dtype "${DTYPE}" \
     --trust-remote-code \
     --served-model-name "gemma-4-31b-it" \
-    --limit-mm-per-prompt image=0,audio=0 \
+    --limit-mm-per-prompt '{"image": 0, "audio": 0}' \
     --api-key EMPTY
