@@ -13,7 +13,7 @@ services:
       - --model
       - /model
       - --tensor-parallel-size
-      - "2"
+      - "4"
       - --max-model-len
       - "262144"
       - --gpu-memory-utilization
@@ -39,6 +39,6 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["2", "3"]
+              device_ids: ["2", "3", "4", "5"]
               capabilities: [gpu]
     restart: unless-stopped
