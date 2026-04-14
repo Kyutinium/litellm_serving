@@ -11,7 +11,7 @@ set -euo pipefail
 
 CONTAINER_NAME="${CONTAINER_NAME:-gemma4-vllm}"
 IMAGE="${IMAGE:-vllm/vllm-openai:gemma4}"
-MODEL_PATH="${MODEL_PATH:-/home/kyvhyvn.shim/to/public/checkpoints/gemma/gemma-4-31B-it}"
+MODEL_PATH="${MODEL_PATH:-/home/kyvhyvn.shim/data/checkpoints/gemma-4-31B-it}"
 PORT="${PORT:-8090}"
 TENSOR_PARALLEL="${TENSOR_PARALLEL:-2}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-262144}"

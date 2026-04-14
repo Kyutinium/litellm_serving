@@ -6,7 +6,7 @@ services:
     ports:
       - "8090:8000"
     volumes:
-      - /home/kyvhyvn.shim/to/public/checkpoints/gemma/gemma-4-31B-it:/model
+      - /home/kyvhyvn.shim/data/checkpoints/gemma-4-31B-it:/model
     environment:
       - PYTHONWARNINGS=ignore::FutureWarning
     command:
