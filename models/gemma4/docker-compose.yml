@@ -1,0 +1,37 @@
+services:
+  gemma4-vllm:
+    image: vllm/vllm-openai:gemma4
+    container_name: gemma4-vllm
+    ipc: host
+    ports:
+      - "8090:8000"
+    volumes:
+      - /home/kyvhyvn.shim/to/public/checkpoints/gemma/gemma-4-31B-it:/model
+    environment:
+      - PYTHONWARNINGS=ignore::FutureWarning
+    command:
+      - --model
+      - /model
+      - --tensor-parallel-size
+      - "2"
+      - --max-model-len
+      - "262144"
+      - --gpu-memory-utilization
+      - "0.90"
+      - --dtype
+      - bfloat16
+      - --trust-remote-code
+      - --served-model-name
+      - gemma-4-31b-it
+      - --limit-mm-per-prompt
+      - '{"image": 0, "audio": 0}'
+      - --api-key
+      - EMPTY
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 2
+              capabilities: [gpu]
+    restart: unless-stopped
