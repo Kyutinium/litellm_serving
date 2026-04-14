@@ -42,6 +42,7 @@ exec docker run \
     --name "${CONTAINER_NAME}" \
     --gpus "${GPU_IDS}" \
     --ipc=host \
+    -e PYTHONWARNINGS="ignore::FutureWarning" \
     -v "${MODEL_PATH}:/model" \
     -p "${PORT}:8000" \
     --restart unless-stopped \
