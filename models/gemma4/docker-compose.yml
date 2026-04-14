@@ -32,6 +32,6 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 2
+              device_ids: ["2", "3"]
               capabilities: [gpu]
     restart: unless-stopped
