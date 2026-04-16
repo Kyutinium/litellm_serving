@@ -6,7 +6,7 @@ set -euo pipefail
 
 IMAGE="${IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda}"
 CONTAINER_NAME="${CONTAINER_NAME:-supergemma4-llamacpp}"
-MODEL_DIR="${MODEL_DIR:-/home/kyvhyvn.shim/to/public/checkpoints/supergemma4-26b-uncensored-gguf-v2}"
+MODEL_DIR="${MODEL_DIR:-/shared/checkpoints/supergemma4-26b-uncensored-gguf-v2}"
 HF_REPO="https://huggingface.co/Jiunsong/supergemma4-26b-uncensored-gguf-v2"
 
 echo "=== Setup: SuperGemma4-26B-Uncensored GGUF v2 ==="
@@ -27,11 +27,11 @@ else
 fi
 
 # 3. GGUF 파일 확인 (lfs pull 자동 시도)
-GGUF_FILES=$(find "${MODEL_DIR}" -maxdepth 1 -name "*.gguf" 2>/dev/null)
+GGUF_FILES=$(find "${MODEL_DIR}" -maxdepth 1 -name "*.gguf" -size +1M 2>/dev/null)
 if [ -z "${GGUF_FILES}" ]; then
-    echo "[WARN] No .gguf files found. Attempting git lfs pull..."
+    echo "[WARN] No valid .gguf files found. Attempting git lfs pull..."
     cd "${MODEL_DIR}" && git lfs pull
-    GGUF_FILES=$(find "${MODEL_DIR}" -maxdepth 1 -name "*.gguf" 2>/dev/null)
+    GGUF_FILES=$(find "${MODEL_DIR}" -maxdepth 1 -name "*.gguf" -size +1M 2>/dev/null)
     if [ -z "${GGUF_FILES}" ]; then
         echo "[ERROR] Still no .gguf files after lfs pull."
         exit 1

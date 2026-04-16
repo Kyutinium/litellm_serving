@@ -13,7 +13,7 @@ set -euo pipefail
 
 CONTAINER_NAME="${CONTAINER_NAME:-supergemma4-llamacpp}"
 IMAGE="${IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda}"
-MODEL_DIR="${MODEL_DIR:-/home/kyvhyvn.shim/to/public/checkpoints/supergemma4-26b-uncensored-gguf-v2}"
+MODEL_DIR="${MODEL_DIR:-/shared/checkpoints/supergemma4-26b-uncensored-gguf-v2}"
 MODEL_FILE="${MODEL_FILE:-}"
 PORT="${PORT:-8091}"
 GPU_LAYERS="${GPU_LAYERS:-99}"
@@ -24,7 +24,7 @@ GPU_IDS="${GPU_IDS:-all}"
 
 # ── GGUF 파일 결정 ──────────────────────────────────────
 if [ -z "${MODEL_FILE}" ]; then
-    MODEL_FILE=$(find "${MODEL_DIR}" -maxdepth 1 -name "*.gguf" -print -quit 2>/dev/null)
+    MODEL_FILE=$(find "${MODEL_DIR}" -maxdepth 1 -name "*.gguf" -size +1M -print -quit 2>/dev/null)
     if [ -z "${MODEL_FILE}" ]; then
         echo "[ERROR] No .gguf file found in ${MODEL_DIR}"
         echo "        Run setup_supergemma4.sh first."
