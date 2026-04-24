@@ -1,0 +1,56 @@
+#!/bin/bash
+# Qwen3.6-27B vLLM 서버 실행
+#
+# Usage:
+#   bash run_qwen36.sh                              # 기본값 (GPU 2,3,4,5, TP=4, port 8092)
+#   PORT=8093 bash run_qwen36.sh                    # 포트 변경
+#   TENSOR_PARALLEL=2 bash run_qwen36.sh            # TP 크기 변경
+#   GPU_IDS='"device=0,1,2,3"' bash run_qwen36.sh   # GPU 변경
+
+set -euo pipefail
+
+CONTAINER_NAME="${CONTAINER_NAME:-qwen36-vllm}"
+IMAGE="${IMAGE:-vllm/vllm-openai:latest}"
+MODEL_PATH="${MODEL_PATH:-/shared/checkpoints/to_supercom/Qwen/Qwen3.6-27B}"
+PORT="${PORT:-8092}"
+TENSOR_PARALLEL="${TENSOR_PARALLEL:-4}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
+DTYPE="${DTYPE:-bfloat16}"
+GPU_IDS="${GPU_IDS:-\"device=2,3,4,5\"}"
+
+# 기존 컨테이너 정리
+if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    echo "Removing existing container: ${CONTAINER_NAME}"
+    docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1
+fi
+
+echo "============================================"
+echo " Qwen3.6-27B vLLM Server"
+echo "============================================"
+echo " Container:     ${CONTAINER_NAME}"
+echo " Model:         ${MODEL_PATH}"
+echo " Port:          ${PORT}"
+echo " TP:            ${TENSOR_PARALLEL}"
+echo " Max Model Len: ${MAX_MODEL_LEN}"
+echo " GPU Mem Util:  ${GPU_MEMORY_UTILIZATION}"
+echo " Dtype:         ${DTYPE}"
+echo " GPUs:          ${GPU_IDS}"
+echo "============================================"
+
+exec docker run \
+    --name "${CONTAINER_NAME}" \
+    --gpus "${GPU_IDS}" \
+    --ipc=host \
+    -v "${MODEL_PATH}:/model" \
+    -p "${PORT}:8000" \
+    --restart unless-stopped \
+    "${IMAGE}" \
+    --model /model \
+    --tensor-parallel-size "${TENSOR_PARALLEL}" \
+    --max-model-len "${MAX_MODEL_LEN}" \
+    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+    --dtype "${DTYPE}" \
+    --trust-remote-code \
+    --served-model-name "qwen3.6-27b" \
+    --api-key EMPTY
