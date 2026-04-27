@@ -19,6 +19,14 @@ GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 DTYPE="${DTYPE:-bfloat16}"
 GPU_IDS="${GPU_IDS:-\"device=2,3,4,5\"}"
 
+# Docker bind mount은 symlink 경로에서 'mkdir ... file exists' 로 실패할 수 있어
+# 실경로(canonical path)로 해석해서 넘긴다.
+if [ ! -e "${MODEL_PATH}" ]; then
+    echo "[ERROR] Model path not found: ${MODEL_PATH}" >&2
+    exit 1
+fi
+MODEL_PATH_REAL="$(readlink -f "${MODEL_PATH}")"
+
 # 기존 컨테이너 정리
 if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     echo "Removing existing container: ${CONTAINER_NAME}"
@@ -30,6 +38,7 @@ echo " Qwen3.6-27B vLLM Server"
 echo "============================================"
 echo " Container:     ${CONTAINER_NAME}"
 echo " Model:         ${MODEL_PATH}"
+echo " Model (real):  ${MODEL_PATH_REAL}"
 echo " Port:          ${PORT}"
 echo " TP:            ${TENSOR_PARALLEL}"
 echo " Max Model Len: ${MAX_MODEL_LEN}"
@@ -42,7 +51,7 @@ exec docker run \
     --name "${CONTAINER_NAME}" \
     --gpus "${GPU_IDS}" \
     --ipc=host \
-    -v "${MODEL_PATH}:/model" \
+    -v "${MODEL_PATH_REAL}:/model:ro" \
     -p "${PORT}:8000" \
     --restart unless-stopped \
     "${IMAGE}" \
