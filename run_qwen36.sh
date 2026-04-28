@@ -57,7 +57,7 @@ exec docker run \
     -p "${PORT}:8000" \
     --restart unless-stopped \
     "${IMAGE}" \
-    serve /model \
+    /model \
     --tensor-parallel-size "${TENSOR_PARALLEL}" \
     --max-model-len "${MAX_MODEL_LEN}" \
     --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
