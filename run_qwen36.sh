@@ -18,6 +18,7 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 DTYPE="${DTYPE:-bfloat16}"
 GPU_IDS="${GPU_IDS:-\"device=2,3,4,5\"}"
+TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-hermes}"
 
 # Docker bind mount은 symlink 경로에서 'mkdir ... file exists' 로 실패할 수 있어
 # 실경로(canonical path)로 해석해서 넘긴다.
@@ -45,6 +46,7 @@ echo " Max Model Len: ${MAX_MODEL_LEN}"
 echo " GPU Mem Util:  ${GPU_MEMORY_UTILIZATION}"
 echo " Dtype:         ${DTYPE}"
 echo " GPUs:          ${GPU_IDS}"
+echo " Tool Parser:   ${TOOL_CALL_PARSER}"
 echo "============================================"
 
 exec docker run \
@@ -62,4 +64,6 @@ exec docker run \
     --dtype "${DTYPE}" \
     --trust-remote-code \
     --served-model-name "qwen3.6-27b" \
+    --enable-auto-tool-choice \
+    --tool-call-parser "${TOOL_CALL_PARSER}" \
     --api-key EMPTY
