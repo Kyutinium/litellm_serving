@@ -18,7 +18,7 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 DTYPE="${DTYPE:-bfloat16}"
 GPU_IDS="${GPU_IDS:-\"device=2,3,4,5\"}"
-TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-hermes}"
+TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-qwen3_coder}"
 
 # Docker bind mount은 symlink 경로에서 'mkdir ... file exists' 로 실패할 수 있어
 # 실경로(canonical path)로 해석해서 넘긴다.
