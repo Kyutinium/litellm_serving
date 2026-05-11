@@ -90,6 +90,52 @@ def _strip_thinking_from_messages(messages):
 # Streaming adapter patch
 # ---------------------------------------------------------------------------
 
+def _patch_empty_tool_calls_streaming():
+    """Treat empty tool_calls list as no tool_calls in Anthropic streaming.
+
+    LiteLLM 1.82.3's _translate_streaming_openai_chunk_to_anthropic checks
+    `if choice.delta.tool_calls is not None` and routes the chunk to
+    input_json_delta. vLLM emits `tool_calls: []` alongside regular text,
+    which trips this check and causes text_delta content to be dropped.
+
+    Wrap the adapter to normalize empty lists to None before delegating.
+    """
+    try:
+        from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
+            LiteLLMAnthropicMessagesAdapter,
+        )
+
+        current = (
+            LiteLLMAnthropicMessagesAdapter
+            ._translate_streaming_openai_chunk_to_anthropic
+        )
+
+        def wrapper(self, choices):
+            for choice in choices or []:
+                delta = getattr(choice, "delta", None)
+                if delta is not None:
+                    tool_calls = getattr(delta, "tool_calls", None)
+                    if isinstance(tool_calls, list) and len(tool_calls) == 0:
+                        try:
+                            delta.tool_calls = None
+                        except AttributeError:
+                            pass
+            return current(self, choices)
+
+        LiteLLMAnthropicMessagesAdapter._translate_streaming_openai_chunk_to_anthropic = (
+            wrapper
+        )
+        print(
+            "[strip_thinking] Patched streaming adapter: empty tool_calls -> None",
+            flush=True,
+        )
+    except Exception as e:
+        print(
+            f"[strip_thinking] Failed to patch empty tool_calls handling: {e}",
+            flush=True,
+        )
+
+
 def _patch_streaming_thinking_delta():
     """Patch the Anthropic streaming adapter based on THINK_OUTPUT_MODE.
 
@@ -222,3 +268,4 @@ def apply_patch():
     litellm.callbacks.append(callback)
     print("[strip_thinking] Registered StripThinkingCallback", flush=True)
     _patch_streaming_thinking_delta()
+    _patch_empty_tool_calls_streaming()
