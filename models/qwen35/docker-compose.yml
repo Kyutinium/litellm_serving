@@ -1,6 +1,6 @@
 services:
   chatdragon-instant-vllm:
-    image: vllm/vllm-openai:latest
+    image: vllm/vllm-openai:v0.20.1
     container_name: chatdragon-instant-vllm
     ipc: host
     ports:
