@@ -4,7 +4,7 @@ services:
     container_name: chatdragon-instant-vllm
     ipc: host
     ports:
-      - "10046:10046"
+      - "2598:10046"
     volumes:
       - /PATH/TO/CKPT:/model:ro
     command:
