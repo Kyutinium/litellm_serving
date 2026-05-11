@@ -6,7 +6,7 @@ set -euo pipefail
 
 IMAGE="${IMAGE:-vllm/vllm-openai:gemma4}"
 CONTAINER_NAME="${CONTAINER_NAME:-gemma4-vllm}"
-MODEL_PATH="${MODEL_PATH:-/home/kyvhyvn.shim/to/public/checkpoints/gemma/gemma-4-31B-it}"
+MODEL_PATH="${MODEL_PATH:-/home/kyvhyvn.shim/data/checkpoints/gemma-4-31B-it}"
 
 echo "=== Setup: Gemma-4-31B-IT ==="
 
