@@ -1,0 +1,36 @@
+services:
+  qwen35-vllm:
+    image: vllm/vllm-openai:latest
+    container_name: qwen35-vllm
+    ipc: host
+    ports:
+      - "10036:8000"
+    volumes:
+      - /PATH/TO/Qwen3.5-122B-A10B:/model:ro
+    command:
+      - --model
+      - /model
+      - --tensor-parallel-size
+      - "4"
+      - --max-model-len
+      - "16384"
+      - --gpu-memory-utilization
+      - "0.90"
+      - --dtype
+      - bfloat16
+      - --trust-remote-code
+      - --served-model-name
+      - Qwen3.5-122B-A10B
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - hermes
+      - --api-key
+      - EMPTY
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2", "3", "4", "5"]
+              capabilities: [gpu]
+    restart: unless-stopped
