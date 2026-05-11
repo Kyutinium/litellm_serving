@@ -53,6 +53,18 @@ model_list:
       api_base: http://localhost:8090/v1
       api_key: EMPTY
       max_tokens: 262144
+  - model_name: supergemma4-26b
+    litellm_params:
+      model: openai/supergemma4-26b
+      api_base: http://localhost:8091/v1
+      api_key: EMPTY
+      max_tokens: 8192
+  - model_name: SuperGemma4-26B
+    litellm_params:
+      model: openai/supergemma4-26b
+      api_base: http://localhost:8091/v1
+      api_key: EMPTY
+      max_tokens: 8192
 
 litellm_settings:
   ssl_verify: false
