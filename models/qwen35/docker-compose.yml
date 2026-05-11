@@ -10,7 +10,7 @@ services:
     command:
       - --model
       - /model
-      - --tensor_parallel_size=4
+      - --tensor_parallel_size=2
       - --port
       - "10046"
       - --reasoning-parser
@@ -18,7 +18,7 @@ services:
       - --served-model-name
       - ChatDRAGON-Instant
       - --max-model-len
-      - "12000"
+      - "200000"
       - --max-num-seqs
       - "32"
       - --enable-auto-tool-choice
@@ -30,6 +30,6 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["2", "3", "4", "5"]
+              device_ids: ["0", "1"]
               capabilities: [gpu]
     restart: unless-stopped
