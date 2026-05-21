@@ -1,4 +1,5 @@
-FROM ghcr.io/berriai/litellm:main-stable
+ARG LITELLM_VERSION=v1.83.10-stable
+FROM ghcr.io/berriai/litellm:${LITELLM_VERSION}
 
 COPY litellm_config.yaml /app/config.yaml
 COPY strip_thinking.py /app/strip_thinking.py

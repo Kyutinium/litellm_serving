@@ -1,0 +1,96 @@
+model_list:
+  - model_name: glm-5-fp8
+    litellm_params:
+      model: hosted_vllm/glm-5-fp8
+      api_base: http://localhost:8088/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: GLM-5-FP8
+    litellm_params:
+      model: hosted_vllm/glm-5-fp8
+      api_base: http://localhost:8088/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: glm-5.1-fp8
+    litellm_params:
+      model: hosted_vllm/glm-5.1-fp8
+      api_base: http://localhost:8089/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: GLM-5.1-FP8
+    litellm_params:
+      model: hosted_vllm/glm-5.1-fp8
+      api_base: http://localhost:8089/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: Qwen3.5-122B-A10B
+    litellm_params:
+      model: openai/Qwen3.5-122B-A10B
+      api_base: http://127.0.0.1:10036/v1
+      api_key: EMPTY
+      max_tokens: 16384
+      merge_reasoning_content_in_choices: true
+  - model_name: SAMUEL-v2
+    litellm_params:
+      model: hosted_vllm/SAMUEL-v2
+      api_base: http://localhost:8020/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: gemma-4-31b-it
+    litellm_params:
+      model: hosted_vllm/gemma-4-31b-it
+      api_base: http://localhost:8090/v1
+      api_key: EMPTY
+      max_tokens: 262144
+  - model_name: Gemma-4-31B-IT
+    litellm_params:
+      model: hosted_vllm/gemma-4-31b-it
+      api_base: http://localhost:8090/v1
+      api_key: EMPTY
+      max_tokens: 262144
+  - model_name: supergemma4-26b
+    litellm_params:
+      model: openai/supergemma4-26b
+      api_base: http://localhost:8091/v1
+      api_key: EMPTY
+      max_tokens: 8192
+  - model_name: SuperGemma4-26B
+    litellm_params:
+      model: openai/supergemma4-26b
+      api_base: http://localhost:8091/v1
+      api_key: EMPTY
+      max_tokens: 8192
+  - model_name: qwen3.6-27b
+    litellm_params:
+      model: hosted_vllm/qwen3.6-27b
+      api_base: http://localhost:8092/v1
+      api_key: EMPTY
+      max_tokens: 32768
+      merge_reasoning_content_in_choices: true
+  - model_name: Qwen3.6-27B
+    litellm_params:
+      model: hosted_vllm/qwen3.6-27b
+      api_base: http://localhost:8092/v1
+      api_key: EMPTY
+      max_tokens: 32768
+      merge_reasoning_content_in_choices: true
+  - model_name: coflow-inference
+    litellm_params:
+      model: hosted_vllm/coflow-inference
+      api_base: http://localhost:8088/v1
+      api_key: EMPTY
+      max_tokens: 32768
+      merge_reasoning_content_in_choices: true
+
+litellm_settings:
+  ssl_verify: false
+  set_verbose: true
+  drop_params: true
+
+general_settings:
+  master_key: sk-1234
