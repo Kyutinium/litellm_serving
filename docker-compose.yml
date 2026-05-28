@@ -10,3 +10,10 @@ services:
       - no_proxy=localhost,127.0.0.1
       - OPENAI_API_BASE=http://localhost:8088/v1
       - THINK_OUTPUT_MODE=none
+      # --- Request logging (uncomment to enable) -------------------------
+      # - LITELLM_LOG_FILE=/var/log/litellm/requests.jsonl
+      # - LITELLM_LOG_LEVEL=info          # info | debug
+      # - LITELLM_LOG_MAX_BYTES=52428800  # 50 MB per file
+      # - LITELLM_LOG_BACKUP_COUNT=5
+    # volumes:
+    #   - ./logs:/var/log/litellm

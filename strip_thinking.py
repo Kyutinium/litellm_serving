@@ -222,3 +222,10 @@ def apply_patch():
     litellm.callbacks.append(callback)
     print("[strip_thinking] Registered StripThinkingCallback", flush=True)
     _patch_streaming_thinking_delta()
+
+    try:
+        import request_logger
+
+        request_logger.register()
+    except Exception as e:
+        print(f"[strip_thinking] request_logger setup failed: {e}", flush=True)

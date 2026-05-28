@@ -2,6 +2,7 @@ FROM ghcr.io/berriai/litellm:main-stable
 
 COPY litellm_config.yaml /app/config.yaml
 COPY strip_thinking.py /app/strip_thinking.py
+COPY request_logger.py /app/request_logger.py
 
 ENV LITELLM_WORKER_STARTUP_HOOKS=strip_thinking:apply_patch
 ENV PYTHONPATH=/app
