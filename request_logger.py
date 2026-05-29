@@ -90,6 +90,50 @@ def _extract_usage(response_obj: Any) -> dict | None:
     }
 
 
+def _extract_response_tool_calls(response_obj: Any) -> list | None:
+    if response_obj is None:
+        return None
+    try:
+        if isinstance(response_obj, dict):
+            choices = response_obj.get("choices") or []
+        else:
+            choices = getattr(response_obj, "choices", None) or []
+        if not choices:
+            return None
+        first = choices[0]
+        message = (
+            first.get("message")
+            if isinstance(first, dict)
+            else getattr(first, "message", None)
+        )
+        if message is None:
+            return None
+        tool_calls = (
+            message.get("tool_calls")
+            if isinstance(message, dict)
+            else getattr(message, "tool_calls", None)
+        )
+        if not tool_calls:
+            return None
+        out = []
+        for tc in tool_calls:
+            if isinstance(tc, dict):
+                out.append(tc)
+                continue
+            for fn in ("model_dump", "dict"):
+                if hasattr(tc, fn):
+                    try:
+                        out.append(getattr(tc, fn)())
+                        break
+                    except Exception:
+                        pass
+            else:
+                out.append({"raw": repr(tc)})
+        return out or None
+    except Exception:
+        return None
+
+
 def _extract_response_text(response_obj: Any) -> str | None:
     if response_obj is None:
         return None
@@ -160,9 +204,18 @@ def _build_record(
         messages = kwargs.get("messages")
         if messages is not None:
             record["messages"] = messages
+        tools = kwargs.get("tools")
+        if tools is not None:
+            record["tools"] = tools
+        tool_choice = kwargs.get("tool_choice")
+        if tool_choice is not None:
+            record["tool_choice"] = tool_choice
         text = _extract_response_text(response_obj)
         if text is not None:
             record["response_text"] = text
+        tool_calls = _extract_response_tool_calls(response_obj)
+        if tool_calls is not None:
+            record["response_tool_calls"] = tool_calls
 
     return record
 
