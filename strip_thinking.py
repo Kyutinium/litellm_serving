@@ -8,7 +8,7 @@ based on the THINK_OUTPUT_MODE environment variable:
   - "default" : LiteLLM default behavior (thinking_delta passed as-is)
   - "think_tag": Wrap thinking in <think>...</think> tags, output as regular text
   - "text"    : Output thinking as regular text without wrapping
-  - "none"    : Don't output thinking content at all  (default value)
+  - "none"    : Suppress thinking signatures; promote reasoning-only output to text (default value)
 
 Invoked via LITELLM_WORKER_STARTUP_HOOKS before any requests are handled.
 """
@@ -101,7 +101,9 @@ def _patch_streaming_thinking_delta():
       - default  : leave everything untouched (no patch)
       - think_tag: convert thinking_delta → text_delta wrapped in <think> tags
       - text     : convert thinking_delta → text_delta (pass content through)
-      - none     : convert thinking_delta → text_delta with empty text (drop)
+      - none     : convert thinking_delta → text_delta. This preserves GLM/vLLM
+                   responses that arrive only as reasoning_content, while still
+                   suppressing signature deltas.
     """
     mode = THINK_OUTPUT_MODE
 
@@ -128,16 +130,22 @@ def _patch_streaming_thinking_delta():
 
             # --- thinking_delta ------------------------------------------------
             if type_of_content == "thinking_delta":
-                if mode == "none":
-                    return "text_delta", ContentTextBlockDelta(
-                        type="text_delta", text=""
-                    )
-
                 thinking_text = (
                     getattr(delta, "thinking", "")
                     or getattr(delta, "text", "")
                     or ""
                 )
+
+                if mode == "none":
+                    # Some vLLM-hosted reasoning models (notably GLM) stream the
+                    # user-visible answer only in reasoning_content while leaving
+                    # content null. LiteLLM surfaces that as thinking_delta even
+                    # though the Anthropic text block has already started. Dropping
+                    # it here makes Claude Code subagents see a 200 OK with an
+                    # empty response_text despite non-zero completion tokens.
+                    return "text_delta", ContentTextBlockDelta(
+                        type="text_delta", text=thinking_text
+                    )
 
                 if mode == "text":
                     return "text_delta", ContentTextBlockDelta(
