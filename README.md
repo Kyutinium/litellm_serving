@@ -24,7 +24,6 @@ reasoning 모델(GLM, DeepSeek, Qwen 등)의 **thinking(추론) 출력**을 환�
 
 > **GLM/vLLM 주의**: 일부 reasoning 모델은 `content: null` 상태로 실제 응답을 `reasoning_content`에만 담아 스트리밍할 수 있습니다.
 > 이 경우 `none` 모드에서도 해당 텍스트를 `text_delta`로 승격하여 Claude Code subagent의 `response_text`가 빈 문자열이 되는 문제를 방지합니다.
-> 단, 백엔드가 실제로 텍스트/추론 델타를 전혀 보내지 않거나 `tool_calls`만 보내고 최종 텍스트를 생성하지 않는 경우에는 이 패치가 없는 답변을 새로 만들 수 없으므로 원본 vLLM/LiteLLM 스트림을 확인해야 합니다.
 
 ### 기타 환경 변수
 
