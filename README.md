@@ -17,10 +17,13 @@ reasoning 모델(GLM, DeepSeek, Qwen 등)의 **thinking(추론) 출력**을 환�
 | `default` | LiteLLM 기본 동작 (thinking_delta 그대로 전달) | *(litellm이 처리하는 대로)* |
 | `think_tag` | `<think>...</think>` 태그로 감싸서 일반 텍스트로 출력 | `<think>\n추론 내용...\n</think>\n\n실제 응답` |
 | `text` | 태그 없이 일반 텍스트로 출력 | `추론 내용...\n\n실제 응답` |
-| `none` | thinking 콘텐츠를 아예 출력하지 않음 **(기본값)** | `실제 응답` |
+| `none` | thinking 서명은 숨기되, GLM/vLLM처럼 `content` 없이 `reasoning_content`만 오는 응답은 빈 응답 방지를 위해 일반 텍스트로 승격 **(기본값)** | `실제 응답` |
 
 > **참고**: 이 설정은 주로 Anthropic Messages API 스트리밍 엔드포인트(`/v1/messages`)에 적용됩니다.
 > OpenAI 형식(`/v1/chat/completions`)에서는 `litellm_config.yaml`의 `merge_reasoning_content_in_choices: true` 설정이 reasoning 병합을 제어합니다.
+
+> **GLM/vLLM 주의**: 일부 reasoning 모델은 `content: null` 상태로 실제 응답을 `reasoning_content`에만 담아 스트리밍할 수 있습니다.
+> 이 경우 `none` 모드에서도 해당 텍스트를 `text_delta`로 승격하여 Claude Code subagent의 `response_text`가 빈 문자열이 되는 문제를 방지합니다.
 
 ### 기타 환경 변수
 
