@@ -77,6 +77,21 @@ litellm.exceptions.BadRequestError: Hosted_vllmException - 19 validation errors:
 
 Rebuild with `docker compose build && docker compose up -d`.
 
+### 5. Claude Code subagent gets 200 OK with empty `response_text`
+
+**Symptom:** Claude Code subagent calls return HTTP 200, but the collected `response_text` is empty even though usage shows non-zero `completion_tokens`.
+
+**Confirmed fix path:** When vLLM/GLM streams visible text as `reasoning_content`, LiteLLM can surface it as `thinking_delta`. In `THINK_OUTPUT_MODE=none`, `strip_thinking.py` now promotes that `thinking_delta` text into an Anthropic `text_delta` instead of replacing it with an empty string. This covers the `content: null` + `reasoning_content: "..."` pattern.
+
+**Important limitation:** If the upstream backend sends no text-bearing delta at all, or sends only `tool_calls` and never follows up with final assistant text after tool results, this patch cannot synthesize a response. In that case, check the raw vLLM/LiteLLM stream for these fields:
+
+- `choices[].delta.content` or `choices[].message.content`
+- `choices[].delta.reasoning_content` or `choices[].message.reasoning_content`
+- `choices[].delta.tool_calls` / `choices[].message.tool_calls` and `finish_reason`
+- whether the next request includes the matching `tool_result`/tool message content
+
+If both `content` and `reasoning_content` are absent/empty across the stream, the empty subagent response is upstream/model/tool-loop behavior rather than `strip_thinking.py` dropping text.
+
 ## Quick Test Commands
 
 ```bash
