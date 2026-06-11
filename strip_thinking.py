@@ -8,7 +8,11 @@ based on the THINK_OUTPUT_MODE environment variable:
   - "default" : LiteLLM default behavior (thinking_delta passed as-is)
   - "think_tag": Wrap thinking in <think>...</think> tags, output as regular text
   - "text"    : Output thinking as regular text without wrapping
-  - "none"    : Don't output thinking content at all  (default value)
+  - "reasoning_fallback": Promote reasoning-only output to text for GLM/vLLM
+  - "none"    : Don't output thinking content at all (default value)
+
+Set STRIP_THINKING_ENABLED=false to bypass both input stripping and
+streaming adapter patching while leaving the startup hook configured.
 
 Invoked via LITELLM_WORKER_STARTUP_HOOKS before any requests are handled.
 """
@@ -18,8 +22,11 @@ import litellm
 from litellm.integrations.custom_logger import CustomLogger
 
 THINK_OUTPUT_MODE = os.environ.get("THINK_OUTPUT_MODE", "none").lower()
+STRIP_THINKING_ENABLED = os.environ.get(
+    "STRIP_THINKING_ENABLED", "true"
+).lower() not in ("0", "false", "no", "off")
 
-_VALID_MODES = ("default", "think_tag", "text", "none")
+_VALID_MODES = ("default", "think_tag", "text", "reasoning_fallback", "none")
 if THINK_OUTPUT_MODE not in _VALID_MODES:
     print(
         f"[strip_thinking] WARNING: invalid THINK_OUTPUT_MODE='{THINK_OUTPUT_MODE}', "
@@ -30,7 +37,7 @@ if THINK_OUTPUT_MODE not in _VALID_MODES:
 
 
 # ---------------------------------------------------------------------------
-# Input message cleaning (always active)
+# Input message cleaning (active when STRIP_THINKING_ENABLED is true)
 # ---------------------------------------------------------------------------
 
 def _strip_thinking_from_messages(messages):
@@ -101,6 +108,10 @@ def _patch_streaming_thinking_delta():
       - default  : leave everything untouched (no patch)
       - think_tag: convert thinking_delta → text_delta wrapped in <think> tags
       - text     : convert thinking_delta → text_delta (pass content through)
+      - reasoning_fallback
+                 : convert thinking_delta → text_delta. This preserves GLM/vLLM
+                   responses that arrive only as reasoning_content, while still
+                   suppressing signature deltas.
       - none     : convert thinking_delta → text_delta with empty text (drop)
     """
     mode = THINK_OUTPUT_MODE
@@ -128,16 +139,28 @@ def _patch_streaming_thinking_delta():
 
             # --- thinking_delta ------------------------------------------------
             if type_of_content == "thinking_delta":
-                if mode == "none":
-                    return "text_delta", ContentTextBlockDelta(
-                        type="text_delta", text=""
-                    )
-
                 thinking_text = (
                     getattr(delta, "thinking", "")
                     or getattr(delta, "text", "")
                     or ""
                 )
+
+                if mode == "none":
+                    return "text_delta", ContentTextBlockDelta(
+                        type="text_delta", text=""
+                    )
+
+                if mode == "reasoning_fallback":
+                    # Some vLLM-hosted reasoning models (notably GLM) stream the
+                    # user-visible answer only in reasoning_content while leaving
+                    # content null. LiteLLM surfaces that as thinking_delta even
+                    # though the Anthropic text block has already started. Use this
+                    # opt-in mode only for backends where reasoning_content is known
+                    # to carry the visible answer; regular none mode keeps dropping
+                    # thinking so normal traffic is not affected.
+                    return "text_delta", ContentTextBlockDelta(
+                        type="text_delta", text=thinking_text
+                    )
 
                 if mode == "text":
                     return "text_delta", ContentTextBlockDelta(
@@ -192,9 +215,9 @@ def _patch_streaming_thinking_delta():
 class StripThinkingCallback(CustomLogger):
     """Pre-call: strip thinking blocks from input messages.
 
-    Input-message stripping is always active regardless of THINK_OUTPUT_MODE
-    because non-Anthropic backends (SGLang, vLLM) do not understand thinking
-    content blocks.
+    Input-message stripping is active when STRIP_THINKING_ENABLED is true,
+    regardless of THINK_OUTPUT_MODE, because non-Anthropic backends
+    (SGLang, vLLM) do not understand thinking content blocks.
     """
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
@@ -217,7 +240,19 @@ class StripThinkingCallback(CustomLogger):
 
 def apply_patch():
     """Called by LITELLM_WORKER_STARTUP_HOOKS during worker init."""
-    print(f"[strip_thinking] THINK_OUTPUT_MODE={THINK_OUTPUT_MODE}", flush=True)
+    print(
+        f"[strip_thinking] STRIP_THINKING_ENABLED={STRIP_THINKING_ENABLED} "
+        f"THINK_OUTPUT_MODE={THINK_OUTPUT_MODE}",
+        flush=True,
+    )
+    if not STRIP_THINKING_ENABLED:
+        print(
+            "[strip_thinking] Disabled — input stripping and streaming adapter "
+            "patch NOT applied",
+            flush=True,
+        )
+        return
+
     callback = StripThinkingCallback()
     litellm.callbacks.append(callback)
     print("[strip_thinking] Registered StripThinkingCallback", flush=True)

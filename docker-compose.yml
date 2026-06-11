@@ -9,4 +9,5 @@ services:
       - NO_PROXY=localhost,127.0.0.1
       - no_proxy=localhost,127.0.0.1
       - OPENAI_API_BASE=http://localhost:8088/v1
-      - THINK_OUTPUT_MODE=none
+      - THINK_OUTPUT_MODE=reasoning_fallback
+      - STRIP_THINKING_ENABLED=true
