@@ -81,7 +81,7 @@ Rebuild with `docker compose build && docker compose up -d`.
 
 **Symptom:** Claude Code subagent calls return HTTP 200, but the collected `response_text` is empty even though usage shows non-zero `completion_tokens`.
 
-**Confirmed fix path:** When vLLM/GLM streams visible text as `reasoning_content`, LiteLLM can surface it as `thinking_delta`. Set `THINK_OUTPUT_MODE=reasoning_fallback` for that model/proxy to promote the `thinking_delta` text into an Anthropic `text_delta` instead of replacing it with an empty string. This covers the `content: null` + `reasoning_content: "..."` pattern while keeping the default `none` mode conservative for normal traffic.
+**Confirmed fix path:** When vLLM/GLM streams visible text as `reasoning_content`, LiteLLM can surface it as `thinking_delta`. In `THINK_OUTPUT_MODE=none`, `strip_thinking.py` now promotes that `thinking_delta` text into an Anthropic `text_delta` instead of replacing it with an empty string. This covers the `content: null` + `reasoning_content: "..."` pattern.
 
 **Important limitation:** If the upstream backend sends no text-bearing delta at all, or sends only `tool_calls` and never follows up with final assistant text after tool results, this patch cannot synthesize a response. In that case, check the raw vLLM/LiteLLM stream for these fields:
 
@@ -91,19 +91,6 @@ Rebuild with `docker compose build && docker compose up -d`.
 - whether the next request includes the matching `tool_result`/tool message content
 
 If both `content` and `reasoning_content` are absent/empty across the stream, the empty subagent response is upstream/model/tool-loop behavior rather than `strip_thinking.py` dropping text.
-
-**Subagent smoke test:** A no-tool subagent prompt such as “BLSA가 뭐의 약자인지만 간단히 답변해줘. tool call은 절대 하지 마.” should return text directly, for example `BLSA는 Bit Line Sense Amplifier의 약자입니다.`, with `tool_uses: 0`. If the raw `RESULT` contains non-empty text but the main agent still says the subagent result was empty, suspect the proxy/model stream that the main agent itself uses to summarize the tool result. In this GLM/vLLM proxy, run Docker with `THINK_OUTPUT_MODE=reasoning_fallback` so a main-agent response emitted as `reasoning_content` is not stripped into an apparent empty/misread response.
-
-
-### 6. Bypass `strip_thinking.py` completely
-
-If another LiteLLM proxy works and you need to verify whether this hook is the difference, set:
-
-```bash
-STRIP_THINKING_ENABLED=false
-```
-
-This is stronger than `THINK_OUTPUT_MODE=default`: `default` only skips the streaming adapter patch, while `STRIP_THINKING_ENABLED=false` skips both the input-message stripping callback registration and the streaming adapter patch. If bypass mode fixes the issue, the next comparison should be between `none`, `default`, and `reasoning_fallback` raw streams.
 
 ## Quick Test Commands
 
@@ -123,3 +110,14 @@ curl http://localhost:8088/v1/chat/completions \
 # List available models on LiteLLM
 curl http://localhost:3999/v1/models -H "Authorization: Bearer sk-1234"
 ```
+
+### 6. Bypass `strip_thinking.py` completely
+
+If another LiteLLM proxy works and you need to verify whether this hook is the difference, set:
+
+```bash
+STRIP_THINKING_ENABLED=false
+```
+
+This is stronger than `THINK_OUTPUT_MODE=default`: `default` only skips the streaming adapter patch, while `STRIP_THINKING_ENABLED=false` skips both the input-message stripping callback registration and the streaming adapter patch. If bypass mode fixes the issue, compare raw streams with `STRIP_THINKING_ENABLED=true` and false.
+

@@ -17,22 +17,14 @@ reasoning 모델(GLM, DeepSeek, Qwen 등)의 **thinking(추론) 출력**을 환�
 | `default` | LiteLLM 기본 동작 (thinking_delta 그대로 전달) | *(litellm이 처리하는 대로)* |
 | `think_tag` | `<think>...</think>` 태그로 감싸서 일반 텍스트로 출력 | `<think>\n추론 내용...\n</think>\n\n실제 응답` |
 | `text` | 태그 없이 일반 텍스트로 출력 | `추론 내용...\n\n실제 응답` |
-| `reasoning_fallback` | GLM/vLLM처럼 `content` 없이 `reasoning_content`만 오는 응답을 빈 응답 방지를 위해 일반 텍스트로 승격 | `실제 응답` |
-| `none` | thinking/reasoning 콘텐츠를 출력하지 않음 **(기본값, 정상 동작 영향 최소화)** | `실제 응답` |
+| `none` | thinking 서명은 숨기되, GLM/vLLM처럼 `content` 없이 `reasoning_content`만 오는 응답은 빈 응답 방지를 위해 일반 텍스트로 승격 **(기본값)** | `실제 응답` |
 
 > **참고**: 이 설정은 주로 Anthropic Messages API 스트리밍 엔드포인트(`/v1/messages`)에 적용됩니다.
 > OpenAI 형식(`/v1/chat/completions`)에서는 `litellm_config.yaml`의 `merge_reasoning_content_in_choices: true` 설정이 reasoning 병합을 제어합니다.
 
 > **GLM/vLLM 주의**: 일부 reasoning 모델은 `content: null` 상태로 실제 응답을 `reasoning_content`에만 담아 스트리밍할 수 있습니다.
-> 이 경우 `reasoning_fallback` 모드를 사용하면 해당 텍스트를 `text_delta`로 승격하여 Claude Code subagent의 `response_text`가 빈 문자열이 되는 문제를 방지합니다.
-> 정상 요청에서 thinking 노출/동작 변경을 피하려면 기본 `none` 모드를 유지하세요. `reasoning_fallback`은 해당 모델이 실제 답변을 `reasoning_content`에만 담는 것이 확인된 경우에만 사용합니다.
+> 이 경우 `none` 모드에서도 해당 텍스트를 `text_delta`로 승격하여 Claude Code subagent의 `response_text`가 빈 문자열이 되는 문제를 방지합니다.
 > 단, 백엔드가 실제로 텍스트/추론 델타를 전혀 보내지 않거나 `tool_calls`만 보내고 최종 텍스트를 생성하지 않는 경우에는 이 패치가 없는 답변을 새로 만들 수 없으므로 원본 vLLM/LiteLLM 스트림을 확인해야 합니다.
-
-> **Docker 기본값**: 이 저장소의 Dockerfile/docker-compose는 GLM/vLLM의 `reasoning_content`-only 응답을 실제 답변으로 보존하기 위해 `THINK_OUTPUT_MODE=reasoning_fallback`을 기본 설정합니다.
-> Python 코드 자체의 환경 변수 기본값은 여전히 `none`이므로, 다른 모델/프록시에서 thinking 노출을 피하려면 명시적으로 `THINK_OUTPUT_MODE=none`을 사용하세요.
-
-> **완전 우회 옵션**: `THINK_OUTPUT_MODE=default`는 스트리밍 adapter patch만 끄고 입력 메시지의 thinking block 제거 callback은 계속 등록합니다.
-> `strip_thinking.py`를 아예 거치지 않는 동작 확인이 필요하면 `STRIP_THINKING_ENABLED=false`를 설정하세요. 이 경우 callback 등록과 streaming patch가 모두 생략됩니다.
 
 ### 기타 환경 변수
 
@@ -50,7 +42,7 @@ reasoning 모델(GLM, DeepSeek, Qwen 등)의 **thinking(추론) 출력**을 환�
 ### Docker 사용
 
 ```bash
-# 1. 빌드 및 실행 (Docker 기본: GLM/vLLM reasoning-only 응답 보호)
+# 1. 빌드 및 실행 (기본: thinking 출력 안 함)
 docker compose up -d --build
 
 # 2. thinking을 <think> 태그로 감싸서 출력
@@ -67,8 +59,8 @@ THINK_OUTPUT_MODE=default docker compose up -d --build
 
 ```yaml
 environment:
-  - THINK_OUTPUT_MODE=reasoning_fallback   # default | think_tag | text | reasoning_fallback | none
-  - STRIP_THINKING_ENABLED=true            # false면 strip_thinking 전체 우회
+  - THINK_OUTPUT_MODE=think_tag   # default | think_tag | text | none
+  - STRIP_THINKING_ENABLED=true  # false면 strip_thinking 전체 우회
 ```
 
 ### Docker 미사용
@@ -80,7 +72,7 @@ pip install litellm
 # 2. 환경 변수 설정
 export LITELLM_WORKER_STARTUP_HOOKS=strip_thinking:apply_patch
 export PYTHONPATH=.
-export THINK_OUTPUT_MODE=none  # default | think_tag | text | reasoning_fallback | none
+export THINK_OUTPUT_MODE=none  # default | think_tag | text | none
 export STRIP_THINKING_ENABLED=true  # false로 설정하면 strip_thinking 전체 우회
 
 # 3. 프록시 실행

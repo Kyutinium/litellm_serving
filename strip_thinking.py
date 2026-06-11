@@ -8,11 +8,7 @@ based on the THINK_OUTPUT_MODE environment variable:
   - "default" : LiteLLM default behavior (thinking_delta passed as-is)
   - "think_tag": Wrap thinking in <think>...</think> tags, output as regular text
   - "text"    : Output thinking as regular text without wrapping
-  - "reasoning_fallback": Promote reasoning-only output to text for GLM/vLLM
-  - "none"    : Don't output thinking content at all (default value)
-
-Set STRIP_THINKING_ENABLED=false to bypass both input stripping and
-streaming adapter patching while leaving the startup hook configured.
+  - "none"    : Suppress thinking signatures; promote reasoning-only output to text (default value)
 
 Invoked via LITELLM_WORKER_STARTUP_HOOKS before any requests are handled.
 """
@@ -26,7 +22,7 @@ STRIP_THINKING_ENABLED = os.environ.get(
     "STRIP_THINKING_ENABLED", "true"
 ).lower() not in ("0", "false", "no", "off")
 
-_VALID_MODES = ("default", "think_tag", "text", "reasoning_fallback", "none")
+_VALID_MODES = ("default", "think_tag", "text", "none")
 if THINK_OUTPUT_MODE not in _VALID_MODES:
     print(
         f"[strip_thinking] WARNING: invalid THINK_OUTPUT_MODE='{THINK_OUTPUT_MODE}', "
@@ -108,11 +104,9 @@ def _patch_streaming_thinking_delta():
       - default  : leave everything untouched (no patch)
       - think_tag: convert thinking_delta → text_delta wrapped in <think> tags
       - text     : convert thinking_delta → text_delta (pass content through)
-      - reasoning_fallback
-                 : convert thinking_delta → text_delta. This preserves GLM/vLLM
+      - none     : convert thinking_delta → text_delta. This preserves GLM/vLLM
                    responses that arrive only as reasoning_content, while still
                    suppressing signature deltas.
-      - none     : convert thinking_delta → text_delta with empty text (drop)
     """
     mode = THINK_OUTPUT_MODE
 
@@ -146,18 +140,12 @@ def _patch_streaming_thinking_delta():
                 )
 
                 if mode == "none":
-                    return "text_delta", ContentTextBlockDelta(
-                        type="text_delta", text=""
-                    )
-
-                if mode == "reasoning_fallback":
                     # Some vLLM-hosted reasoning models (notably GLM) stream the
                     # user-visible answer only in reasoning_content while leaving
                     # content null. LiteLLM surfaces that as thinking_delta even
-                    # though the Anthropic text block has already started. Use this
-                    # opt-in mode only for backends where reasoning_content is known
-                    # to carry the visible answer; regular none mode keeps dropping
-                    # thinking so normal traffic is not affected.
+                    # though the Anthropic text block has already started. Dropping
+                    # it here makes Claude Code subagents see a 200 OK with an
+                    # empty response_text despite non-zero completion tokens.
                     return "text_delta", ContentTextBlockDelta(
                         type="text_delta", text=thinking_text
                     )
