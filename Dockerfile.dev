@@ -1,0 +1,22 @@
+FROM ghcr.io/berriai/litellm:main-latest
+
+# Sanitizer-only dependencies (kept separate from LiteLLM's own deps). The
+# sanitizer never imports litellm/pydantic/anthropic/openai — HTTP only.
+RUN pip install --no-cache-dir "fastapi==0.115.*" "uvicorn[standard]==0.32.*" "httpx==0.27.*"
+
+COPY litellm_config.yaml /app/config.yaml
+COPY strip_thinking.py /app/strip_thinking.py
+COPY sanitizer /app/sanitizer
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENV PYTHONPATH=/app
+ENV LITELLM_WORKER_STARTUP_HOOKS=strip_thinking:apply_patch
+ENV UPSTREAM_BASE_URL=http://localhost:3999
+ENV LITELLM_PORT=3999
+ENV SANITIZER_PORT=3996
+ENV THINK_OUTPUT_MODE=default
+
+EXPOSE 3999 3996
+
+ENTRYPOINT ["/app/entrypoint.sh"]

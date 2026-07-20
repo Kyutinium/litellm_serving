@@ -1,0 +1,24 @@
+services:
+  litellm_dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    network_mode: host
+    environment:
+      - LITELLM_MASTER_KEY=sk-1234
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      - REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+      - NO_PROXY=localhost,127.0.0.1
+      - no_proxy=localhost,127.0.0.1
+      - LITELLM_PORT=3999
+      - UPSTREAM_BASE_URL=http://localhost:3999
+      # Sanitizer listens here; point clients' ANTHROPIC_BASE_URL at it.
+      - SANITIZER_PORT=5501
+      - SANITIZER_USE_OPENAI_BRIDGE=true
+      - THINK_OUTPUT_MODE=default
+      - LOG_LEVEL=INFO
+    volumes:
+      # Bind-mount sanitizer + config for fast iteration (no rebuild on edit).
+      - ./sanitizer:/app/sanitizer:ro
+      - ./litellm_config.yaml:/app/config.yaml:ro
+      - ./strip_thinking.py:/app/strip_thinking.py:ro
