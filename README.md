@@ -120,8 +120,26 @@ model_list:
 ```
 ├── litellm_config.yaml    # 모델 및 LiteLLM 설정
 ├── strip_thinking.py      # thinking 출력 제어 (THINK_OUTPUT_MODE)
+├── sanitizer/             # Anthropic-facing 리버스 프록시 (LiteLLM 어댑터 버그 우회)
 ├── Dockerfile
 ├── docker-compose.yml
+├── Dockerfile.dev         # sanitizer + LiteLLM 동시 기동
+├── docker-compose-dev.yml
+├── entrypoint.sh          # sanitizer/LiteLLM 이중 프로세스 엔트리포인트
 ├── TROUBLESHOOTING.md     # 트러블슈팅 가이드
 └── DEBUG_REPORT.md        # SDK 스트리밍 디버그 리포트
 ```
+
+---
+
+## Sanitizer (Anthropic 리버스 프록시)
+
+`sanitizer/`는 LiteLLM 프록시 앞단에 배치되는 얇은 FastAPI 리버스 프록시로,
+Anthropic `/v1/messages` 엔드포인트를 노출하면서 LiteLLM 자체 Anthropic 어댑터의
+확인된 버그(잘못된 SSE, 잘리거나 zero-payload인 `input_json_delta`, reasoning 콘텐츠
+드롭)를 우회합니다. `SANITIZER_USE_OPENAI_BRIDGE=true`면 upstream의 정상적인
+`/v1/chat/completions` 라우트를 직접 호출해 in-process로 변환하며,
+`tool_result` 안의 이미지를 직후 user 메시지로 재배치해 vision 백엔드에서
+이미지가 유실되던 문제(gateway issue #140)도 함께 해결합니다.
+
+자세한 내용과 실행/테스트 방법은 [`sanitizer/README.md`](sanitizer/README.md) 참조.
