@@ -209,6 +209,15 @@ async def _handle_non_streaming(
         resp_headers = _clean_response_headers(resp.headers)
         media_type = resp.headers.get("content-type")
 
+        if resp.status_code >= 400:
+            # Metadata only — never the prompt/response body.
+            logger.warning(
+                "upstream error status=%d content_type=%r bytes=%d",
+                resp.status_code,
+                media_type,
+                len(body_bytes),
+            )
+
         if use_bridge and 200 <= resp.status_code < 300 and "application/json" in (media_type or ""):
             try:
                 anthropic_body = openai_response_to_anthropic_body(json.loads(body_bytes))

@@ -181,6 +181,22 @@ def test_error_log_omits_body_content(upstream, monkeypatch, caplog):
 # --------------------------------------------------------------------------- #
 
 
+def test_non_streaming_error_logs_metadata_not_body(upstream, monkeypatch, caplog):
+    monkeypatch.delenv("SANITIZER_USE_OPENAI_BRIDGE", raising=False)
+    secret = "SECRET_RESPONSE_BODY"
+    upstream.set_handler(lambda request: httpx.Response(422, json={"error": secret}))
+
+    async def _do():
+        async with _client() as client:
+            return await client.post("/v1/messages", json={"model": "M", "messages": []})
+
+    with caplog.at_level("WARNING"):
+        resp = run(_do())
+    assert resp.status_code == 422
+    assert "status=422" in caplog.text  # metadata logged
+    assert secret not in caplog.text  # body never logged
+
+
 def test_bridge_streaming_full(upstream, monkeypatch):
     monkeypatch.setenv("SANITIZER_USE_OPENAI_BRIDGE", "true")
     monkeypatch.setenv("THINK_OUTPUT_MODE", "default")

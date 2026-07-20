@@ -59,7 +59,8 @@ async def passthrough(path: str, request: Request):
     async def relay():
         try:
             async for chunk in resp.aiter_bytes():
-                yield chunk
+                if chunk:  # drop empty byte chunks; strict SSE parsers choke on them
+                    yield chunk
         finally:
             await resp.aclose()
             await client.aclose()
