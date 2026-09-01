@@ -1,0 +1,169 @@
+# Claude Code gateway model discovery — 예시 설정
+#
+# 목적: CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 로 띄운 Claude Code의
+# /model 픽커에 LiteLLM 등록 모델들이 "From gateway"로 뜨게 한다.
+#
+# 동작 원리 (claude-code 2.1.251 실측, oh-my-gateway#157):
+#   1. Claude Code가 ANTHROPIC_BASE_URL(= sanitizer)로 GET /v1/models?limit=1000 을 보낸다.
+#      sanitizer 는 POST /v1/messages 외 전부를 상류(LiteLLM)로 그대로 릴레이하므로
+#      이 요청은 이미 LiteLLM 까지 도달한다. 별도 설정 불필요.
+#   2. Claude Code는 응답에서 id에 `claude` 또는 `anthropic`이 **포함된** 모델만 남긴다.
+#      (부분 문자열 매치다. 문서들이 말하는 "접두사"가 아니다 — 앵커 없는
+#       /(claude|anthropic)/i 정규식을 바이너리에서 확인했다.)
+#   3. 남은 모델이 /model 픽커에 "From gateway"로 뜨고, 선택하면 그 id가
+#      문자 그대로 /v1/messages 의 model 로 온다. 그래서 아래 별칭의
+#      model_name 문자열이 곧 픽커에 뜨는 이름이자 라우팅 키다.
+#
+# 이 파일은 litellm_config.yaml(이 커밋 시점)에 `claude-*` 별칭 7개(실모델 7종, 대소문자 중복 제외)를 추가한
+# 전체 예시다. 기존 이름은 전부 유지되므로 기존 호출자는 영향이 없다.
+#
+# E2E 검증: 이 파일 그대로(실제 LiteLLM proxy + 실제 sanitizer + claude-code 2.1.251)
+#   [gatewayDiscovery] cached 7 models
+# 가 기록되고 7개 전부 픽커 캐시(cache/gateway-models.json)에 실렸다.
+#
+# ⚠️ 컨텍스트 윈도 주의: Claude Code는 미인식 모델 id의 윈도를 200k로 가정한다.
+#   실제 32k 모델이면 상류가 먼저 거부할 수 있다. README의
+#   "Claude Code 모델 디스커버리" 절의 CLAUDE_CODE_MAX_CONTEXT_TOKENS 안내 참고.
+
+model_list:
+  - model_name: glm-5-fp8
+    litellm_params:
+      model: hosted_vllm/glm-5-fp8
+      api_base: http://localhost:8088/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: GLM-5-FP8
+    litellm_params:
+      model: hosted_vllm/glm-5-fp8
+      api_base: http://localhost:8088/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: glm-5.1-fp8
+    litellm_params:
+      model: hosted_vllm/glm-5.1-fp8
+      api_base: http://localhost:8089/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: GLM-5.1-FP8
+    litellm_params:
+      model: hosted_vllm/glm-5.1-fp8
+      api_base: http://localhost:8089/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: Qwen3.5-122B-A10B
+    litellm_params:
+      model: openai/Qwen3.5-122B-A10B
+      api_base: http://127.0.0.1:10036/v1
+      api_key: EMPTY
+      max_tokens: 16384
+      merge_reasoning_content_in_choices: true
+  - model_name: SAMUEL-v2
+    litellm_params:
+      model: hosted_vllm/SAMUEL-v2
+      api_base: http://localhost:8020/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: gemma-4-31b-it
+    litellm_params:
+      model: hosted_vllm/gemma-4-31b-it
+      api_base: http://localhost:8090/v1
+      api_key: EMPTY
+      max_tokens: 262144
+  - model_name: Gemma-4-31B-IT
+    litellm_params:
+      model: hosted_vllm/gemma-4-31b-it
+      api_base: http://localhost:8090/v1
+      api_key: EMPTY
+      max_tokens: 262144
+  - model_name: supergemma4-26b
+    litellm_params:
+      model: openai/supergemma4-26b
+      api_base: http://localhost:8091/v1
+      api_key: EMPTY
+      max_tokens: 8192
+  - model_name: SuperGemma4-26B
+    litellm_params:
+      model: openai/supergemma4-26b
+      api_base: http://localhost:8091/v1
+      api_key: EMPTY
+      max_tokens: 8192
+  - model_name: qwen3.6-27b
+    litellm_params:
+      model: hosted_vllm/qwen3.6-27b
+      api_base: http://localhost:8092/v1
+      api_key: EMPTY
+      max_tokens: 32768
+      merge_reasoning_content_in_choices: true
+  - model_name: Qwen3.6-27B
+    litellm_params:
+      model: hosted_vllm/qwen3.6-27b
+      api_base: http://localhost:8092/v1
+      api_key: EMPTY
+      max_tokens: 32768
+      merge_reasoning_content_in_choices: true
+
+
+  # --- Claude Code discovery 용 별칭 (여기서부터 추가분) -------------------
+  # id에 `claude`가 들어가야 Claude Code 필터를 통과한다. 각 블록은 위 원본
+  # 엔트리를 이름만 바꿔 복제한 것이다(파라미터 동일).
+  - model_name: claude-glm-5-fp8
+    litellm_params:
+      model: hosted_vllm/glm-5-fp8
+      api_base: http://localhost:8088/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: claude-glm-5.1-fp8
+    litellm_params:
+      model: hosted_vllm/glm-5.1-fp8
+      api_base: http://localhost:8089/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: claude-qwen3.5-122b-a10b
+    litellm_params:
+      model: openai/Qwen3.5-122B-A10B
+      api_base: http://127.0.0.1:10036/v1
+      api_key: EMPTY
+      max_tokens: 16384
+      merge_reasoning_content_in_choices: true
+  - model_name: claude-samuel-v2
+    litellm_params:
+      model: hosted_vllm/SAMUEL-v2
+      api_base: http://localhost:8020/v1
+      api_key: EMPTY
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+  - model_name: claude-gemma-4-31b-it
+    litellm_params:
+      model: hosted_vllm/gemma-4-31b-it
+      api_base: http://localhost:8090/v1
+      api_key: EMPTY
+      max_tokens: 262144
+  - model_name: claude-supergemma4-26b
+    litellm_params:
+      model: openai/supergemma4-26b
+      api_base: http://localhost:8091/v1
+      api_key: EMPTY
+      max_tokens: 8192
+  - model_name: claude-qwen3.6-27b
+    litellm_params:
+      model: hosted_vllm/qwen3.6-27b
+      api_base: http://localhost:8092/v1
+      api_key: EMPTY
+      max_tokens: 32768
+      merge_reasoning_content_in_choices: true
+  # --- 추가분 끝 -----------------------------------------------------------
+
+litellm_settings:
+  ssl_verify: false
+  set_verbose: true
+  drop_params: true
+
+general_settings:
+  master_key: sk-1234
