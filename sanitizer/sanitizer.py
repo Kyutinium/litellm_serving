@@ -63,19 +63,58 @@ def _synthetic_block(block_type: str) -> Dict:
 
 
 def _normalize_content_block(block_type: str, content_block: Dict) -> Dict:
-    """Fill compatibility fields required by strict Anthropic clients.
+    """Fill thinking fields required by strict Anthropic clients.
 
-    Thinking blocks assembled by Claude Agent SDK require a ``signature`` key.
-    Native Anthropic streams provide an empty signature on block start and later
-    populate it via ``signature_delta``.  LiteLLM-compatible backends can omit the
-    key entirely, so add only the empty start placeholder and preserve any real
-    signature already supplied by the upstream.
+    Claude Agent SDK indexes both ``thinking`` and ``signature`` directly.  Some
+    LiteLLM-compatible backends omit one of those keys (or serialize it as null),
+    so normalize missing/null values to the empty start placeholder.  Real
+    upstream values are preserved unchanged.
     """
-    if block_type != "thinking" or "signature" in content_block:
+    if block_type != "thinking":
         return content_block
+
+    thinking = content_block.get("thinking")
+    signature = content_block.get("signature")
+    if thinking is not None and signature is not None:
+        return content_block
+
     normalized = dict(content_block)
-    normalized["signature"] = ""
+    if thinking is None:
+        normalized["thinking"] = ""
+    if signature is None:
+        normalized["signature"] = ""
     return normalized
+
+
+def normalize_anthropic_message_body(body: Dict) -> Dict:
+    """Normalize thinking blocks in a non-streaming Anthropic message body.
+
+    Streaming responses pass through :func:`sanitize_events`; bridge-mode
+    non-streaming responses are constructed locally.  Passthrough non-streaming
+    responses need the same compatibility invariant, so apply the content-block
+    normalizer without otherwise rewriting the response body.
+    """
+    content = body.get("content")
+    if not isinstance(content, list):
+        return body
+
+    normalized_content = []
+    changed = False
+    for block in content:
+        if not isinstance(block, dict):
+            normalized_content.append(block)
+            continue
+        block_type = block.get("type", "text")
+        normalized = _normalize_content_block(block_type, block)
+        if normalized is not block:
+            changed = True
+        normalized_content.append(normalized)
+
+    if not changed:
+        return body
+    normalized_body = dict(body)
+    normalized_body["content"] = normalized_content
+    return normalized_body
 
 
 async def sanitize_events(

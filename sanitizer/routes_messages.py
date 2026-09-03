@@ -32,7 +32,7 @@ from .openai_bridge import (
     openai_stream_to_anthropic_events,
 )
 from .output_transform import transform_events
-from .sanitizer import sanitize_events
+from .sanitizer import normalize_anthropic_message_body, sanitize_events
 
 logger = logging.getLogger("sanitizer.routes_messages")
 
@@ -218,18 +218,30 @@ async def _handle_non_streaming(
                 len(body_bytes),
             )
 
-        if use_bridge and 200 <= resp.status_code < 300 and "application/json" in (media_type or ""):
+        if 200 <= resp.status_code < 300 and "application/json" in (media_type or ""):
             try:
-                anthropic_body = openai_response_to_anthropic_body(json.loads(body_bytes))
+                parsed_body = json.loads(body_bytes)
             except ValueError:
-                anthropic_body = None
-            if anthropic_body is not None:
+                parsed_body = None
+
+            if use_bridge and isinstance(parsed_body, dict):
+                anthropic_body = openai_response_to_anthropic_body(parsed_body)
                 return Response(
                     content=json.dumps(anthropic_body).encode(),
                     status_code=resp.status_code,
                     headers=resp_headers,
                     media_type="application/json",
                 )
+
+            if not use_bridge and isinstance(parsed_body, dict):
+                normalized_body = normalize_anthropic_message_body(parsed_body)
+                if normalized_body is not parsed_body:
+                    return Response(
+                        content=json.dumps(normalized_body).encode(),
+                        status_code=resp.status_code,
+                        headers=resp_headers,
+                        media_type="application/json",
+                    )
 
         return Response(
             content=body_bytes,
