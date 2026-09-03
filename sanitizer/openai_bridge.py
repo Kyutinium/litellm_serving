@@ -23,6 +23,14 @@ from typing import AsyncIterator, Dict, List, Optional
 _TOOL_IMAGE_NOTE = "[The tool returned an image; it is attached in the following user message.]"
 _RELOCATED_IMAGE_NOTE = "[Image returned by the previous tool call]"
 
+# OpenAI/vLLM reasoning has no Anthropic cryptographic thinking signature.  The
+# Agent SDK still requires the field to exist, and Anthropic's own streaming
+# protocol starts thinking blocks with an empty signature before a later
+# signature_delta fills it.  Keep the compatibility placeholder explicitly
+# empty rather than pretending it is a real signature.  Request translation
+# drops thinking blocks, so this value is never forwarded upstream.
+_UNSIGNED_THINKING_SIGNATURE = ""
+
 _FINISH_REASON_MAP = {
     "stop": "end_turn",
     "tool_calls": "tool_use",
@@ -410,7 +418,15 @@ async def openai_stream_to_anthropic_events(
 
             reasoning = delta.get("reasoning_content")
             if reasoning:
-                for ev in _ensure_block(state, "thinking", {"type": "thinking", "thinking": ""}):
+                for ev in _ensure_block(
+                    state,
+                    "thinking",
+                    {
+                        "type": "thinking",
+                        "thinking": "",
+                        "signature": _UNSIGNED_THINKING_SIGNATURE,
+                    },
+                ):
                     yield ev
                 yield {
                     "type": "content_block_delta",
@@ -455,7 +471,13 @@ def openai_response_to_anthropic_body(body: Dict) -> Dict:
     content_blocks: List[Dict] = []
     reasoning = message.get("reasoning_content")
     if reasoning:
-        content_blocks.append({"type": "thinking", "thinking": reasoning})
+        content_blocks.append(
+            {
+                "type": "thinking",
+                "thinking": reasoning,
+                "signature": _UNSIGNED_THINKING_SIGNATURE,
+            }
+        )
     text = message.get("content")
     if text:
         content_blocks.append({"type": "text", "text": text})
