@@ -56,10 +56,26 @@ def _is_empty_delta(delta: Dict) -> bool:
 def _synthetic_block(block_type: str) -> Dict:
     """Minimal spec-valid ``content_block`` payload for a synthesized start."""
     if block_type == "thinking":
-        return {"type": "thinking", "thinking": ""}
+        return {"type": "thinking", "thinking": "", "signature": ""}
     if block_type in ("tool_use", "server_tool_use"):
         return {"type": "tool_use", "id": "", "name": "", "input": {}}
     return {"type": "text", "text": ""}
+
+
+def _normalize_content_block(block_type: str, content_block: Dict) -> Dict:
+    """Fill compatibility fields required by strict Anthropic clients.
+
+    Thinking blocks assembled by Claude Agent SDK require a ``signature`` key.
+    Native Anthropic streams provide an empty signature on block start and later
+    populate it via ``signature_delta``.  LiteLLM-compatible backends can omit the
+    key entirely, so add only the empty start placeholder and preserve any real
+    signature already supplied by the upstream.
+    """
+    if block_type != "thinking" or "signature" in content_block:
+        return content_block
+    normalized = dict(content_block)
+    normalized["signature"] = ""
+    return normalized
 
 
 async def sanitize_events(
@@ -78,7 +94,7 @@ async def sanitize_events(
         return {
             "type": "content_block_start",
             "index": open_index,
-            "content_block": content_block,
+            "content_block": _normalize_content_block(block_type, content_block),
         }
 
     def close_block():
