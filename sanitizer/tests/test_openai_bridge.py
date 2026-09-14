@@ -352,3 +352,83 @@ def test_nonstream_malformed_arguments_fallback():
     }
     out = openai_response_to_anthropic_body(body)
     assert out["content"][0]["input"] == {}
+
+
+# --------------------------------------------------------------------------- #
+# Literal <think> fallback (issue #23)
+# --------------------------------------------------------------------------- #
+
+
+def test_stream_literal_think_tags_become_thinking_block():
+    """LiteLLM merge_reasoning_content_in_choices puts <think> into content."""
+    chunks = [
+        {"choices": [{"delta": {"role": "assistant", "content": "<think>Let me think about "}}]},
+        {"choices": [{"delta": {"content": "this carefully."}}]},
+        {"choices": [{"delta": {"content": "</think>\n\nAnswer after thinking: "}}]},
+        {"choices": [{"delta": {"content": "42."}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    out = stream_to_events(chunks)
+    starts = [(e["index"], e["content_block"]["type"]) for e in out if e["type"] == "content_block_start"]
+    assert starts == [(0, "thinking"), (1, "text")]
+    thinking = "".join(
+        e["delta"]["thinking"] for e in out if e["type"] == "content_block_delta" and e["delta"]["type"] == "thinking_delta"
+    )
+    text = "".join(
+        e["delta"]["text"] for e in out if e["type"] == "content_block_delta" and e["delta"]["type"] == "text_delta"
+    )
+    assert thinking == "Let me think about this carefully."
+    assert text == "Answer after thinking: 42."
+    assert "<think>" not in text and "</think>" not in text
+
+
+def test_stream_think_tag_split_across_chunks_is_held_back():
+    chunks = [
+        {"choices": [{"delta": {"role": "assistant", "content": "<thi"}}]},
+        {"choices": [{"delta": {"content": "nk>reason</thi"}}]},
+        {"choices": [{"delta": {"content": "nk>reply"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    out = stream_to_events(chunks)
+    kinds = [e["content_block"]["type"] for e in out if e["type"] == "content_block_start"]
+    assert kinds == ["thinking", "text"]
+    thinking = "".join(e["delta"]["thinking"] for e in out if e["type"] == "content_block_delta" and e["delta"]["type"] == "thinking_delta")
+    text = "".join(e["delta"]["text"] for e in out if e["type"] == "content_block_delta" and e["delta"]["type"] == "text_delta")
+    assert (thinking, text) == ("reason", "reply")
+
+
+def test_stream_unfinished_partial_tag_is_flushed_as_text():
+    chunks = [
+        {"choices": [{"delta": {"role": "assistant", "content": "a < b <th"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    out = stream_to_events(chunks)
+    text = "".join(e["delta"]["text"] for e in out if e["type"] == "content_block_delta" and e["delta"]["type"] == "text_delta")
+    assert text == "a < b <th"
+    assert [e["content_block"]["type"] for e in out if e["type"] == "content_block_start"] == ["text"]
+
+
+def test_stream_fold_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("SANITIZER_FOLD_THINK_TAGS", "false")
+    chunks = [
+        {"choices": [{"delta": {"role": "assistant", "content": "<think>x</think>y"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    out = stream_to_events(chunks)
+    assert [e["content_block"]["type"] for e in out if e["type"] == "content_block_start"] == ["text"]
+    text = "".join(e["delta"]["text"] for e in out if e["type"] == "content_block_delta" and e["delta"]["type"] == "text_delta")
+    assert text == "<think>x</think>y"
+
+
+def test_nonstream_literal_think_tags_become_thinking_block():
+    body = {
+        "id": "chatcmpl-1",
+        "model": "glm",
+        "choices": [{"message": {"role": "assistant", "content": "<think>\nreason\n</think>\n\nreply"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+    }
+    out = openai_response_to_anthropic_body(body)
+    assert [b["type"] for b in out["content"]] == ["thinking", "text"]
+    assert out["content"][0]["thinking"] == "\nreason\n"
+    assert out["content"][0]["signature"] == ""
+    assert out["content"][1]["text"] == "reply"
