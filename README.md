@@ -110,6 +110,14 @@ model_list:
 - `max_tokens` — 최대 출력 토큰 수
 - `merge_reasoning_content_in_choices: true` — OpenAI 형식(`/v1/chat/completions`) 응답에서 reasoning_content를 content에 병합
 
+> **Sanitizer 브리지(`SANITIZER_USE_OPENAI_BRIDGE=true`)를 앞에 두는 모델에는 이 옵션을 켜지 마세요.**
+> 브리지는 upstream의 `reasoning_content`를 Anthropic `thinking` 블록으로 옮기는데, 이 옵션이 켜져
+> 있으면 LiteLLM이 그 전에 reasoning을 `content` 안의 리터럴 `<think>…</think>` 텍스트로 합쳐 버려서
+> Anthropic 클라이언트(Claude Agent SDK / Claude Code)에는 thinking 블록 대신 `<think>` 태그가 섞인
+> 본문 텍스트가 도착합니다 (실측: gateway → sanitizer → LiteLLM 경로에서 `text_delta: "<think>…</think>답변"`).
+> ChatDRAGON은 리터럴 `<think>` 태그를 접어 주지만 다른 클라이언트는 태그를 그대로 보여 줍니다.
+> 브리지 없이 LiteLLM의 `/v1/messages` 어댑터를 직접 쓰는 경우에만 의미가 있는 옵션입니다.
+
 > **주의**: `api_base`는 실제로 모델이 서빙되고 있는 서버의 주소와 포트로 변경해야 합니다.
 > 예를 들어 SGLang이 `http://192.168.1.100:8088/v1`에서 실행 중이라면 해당 URL로 설정하세요.
 
