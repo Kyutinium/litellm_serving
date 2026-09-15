@@ -15,8 +15,9 @@ Three public entry points:
 from __future__ import annotations
 
 import json
+import os
 import uuid
-from typing import AsyncIterator, Dict, List, Optional
+from typing import AsyncIterator, Dict, List, Optional, Tuple
 
 # Note attached to a ``tool`` message whose image payload was relocated into a
 # trailing user message (OpenAI ``role:"tool"`` messages cannot carry images).
@@ -38,6 +39,98 @@ _FINISH_REASON_MAP = {
     "length": "max_tokens",
     "content_filter": "stop_sequence",
 }
+
+
+# --------------------------------------------------------------------------- #
+# Literal <think>…</think> fallback
+# --------------------------------------------------------------------------- #
+#
+# LiteLLM's ``merge_reasoning_content_in_choices: true`` folds a model's
+# reasoning into ``content`` as literal ``<think>…</think>`` text *before* this
+# bridge ever sees a ``reasoning_content`` field. Anthropic clients then receive
+# the tags inside ``text_delta`` instead of a ``thinking`` block. Fold such tags
+# back into thinking blocks so the wire shape does not depend on that flag.
+# Opt out with ``SANITIZER_FOLD_THINK_TAGS=false`` (default on).
+
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def fold_think_tags_enabled() -> bool:
+    raw = os.environ.get("SANITIZER_FOLD_THINK_TAGS", "true").strip().lower()
+    return raw not in ("false", "0", "no", "off")
+
+
+def _partial_tag_suffix(text: str, tag: str) -> int:
+    """Length of the longest proper prefix of ``tag`` that ``text`` ends with.
+
+    A chunk may end in the middle of a tag (``"…<thi"``); that tail must be held
+    back until the next chunk decides whether it completes the tag.
+    """
+    for size in range(len(tag) - 1, 0, -1):
+        if text.endswith(tag[:size]):
+            return size
+    return 0
+
+
+def split_think_segments(
+    text: str, in_think: bool, carry: str
+) -> Tuple[List[Tuple[str, str]], bool, str]:
+    """Split ``carry + text`` into ``[("thinking"|"text", chunk), …]``.
+
+    Returns the segments, the new ``in_think`` flag and the new carry (a partial
+    tag held back for the next chunk). Empty segments are dropped. Newlines right
+    after a closing tag are dropped so the visible answer does not start with the
+    blank line LiteLLM inserts between ``</think>`` and the reply.
+    """
+    segments: List[Tuple[str, str]] = []
+    buf = carry + text
+    while buf:
+        tag = _THINK_CLOSE if in_think else _THINK_OPEN
+        kind = "thinking" if in_think else "text"
+        idx = buf.find(tag)
+        if idx >= 0:
+            if idx:
+                segments.append((kind, buf[:idx]))
+            buf = buf[idx + len(tag):]
+            if in_think:
+                buf = buf.lstrip("\n")
+            in_think = not in_think
+            continue
+        keep = _partial_tag_suffix(buf, tag)
+        head, tail = (buf[: len(buf) - keep], buf[len(buf) - keep:]) if keep else (buf, "")
+        if head:
+            segments.append((kind, head))
+        return segments, in_think, tail
+    return segments, in_think, ""
+
+
+def _content_to_blocks(text: str) -> List[Dict]:
+    """Non-streaming: turn ``content`` with literal think tags into blocks."""
+    if not fold_think_tags_enabled() or _THINK_OPEN not in text:
+        return [{"type": "text", "text": text}]
+    segments, in_think, carry = split_think_segments(text, False, "")
+    if carry:
+        segments.append(("thinking" if in_think else "text", carry))
+    blocks: List[Dict] = []
+    for kind, chunk in segments:
+        if kind == "thinking":
+            if blocks and blocks[-1]["type"] == "thinking":
+                blocks[-1]["thinking"] += chunk
+            else:
+                blocks.append(
+                    {
+                        "type": "thinking",
+                        "thinking": chunk,
+                        "signature": _UNSIGNED_THINKING_SIGNATURE,
+                    }
+                )
+        else:
+            if blocks and blocks[-1]["type"] == "text":
+                blocks[-1]["text"] += chunk
+            else:
+                blocks.append({"type": "text", "text": chunk})
+    return blocks or [{"type": "text", "text": text}]
 
 
 # --------------------------------------------------------------------------- #
@@ -308,6 +401,10 @@ class _StreamState:
         self.input_tokens = 0
         self.output_tokens = 0
         self.finish_reason: Optional[str] = None
+        # literal <think> fallback state (see split_think_segments)
+        self.in_think = False
+        self.think_carry = ""
+        self.fold_think = fold_think_tags_enabled()
 
 
 def _close_open(state: _StreamState) -> List[Dict]:
@@ -382,6 +479,47 @@ def _flush_tool_calls(state: _StreamState) -> List[Dict]:
     return events
 
 
+def _emit_segment(state: _StreamState, kind: str, chunk: str) -> List[Dict]:
+    if not chunk:
+        return []
+    if kind == "thinking":
+        events = _ensure_block(
+            state,
+            "thinking",
+            {"type": "thinking", "thinking": "", "signature": _UNSIGNED_THINKING_SIGNATURE},
+        )
+        events.append(
+            {
+                "type": "content_block_delta",
+                "index": state.open_index,
+                "delta": {"type": "thinking_delta", "thinking": chunk},
+            }
+        )
+        return events
+    events = _ensure_block(state, "text", {"type": "text", "text": ""})
+    events.append(
+        {
+            "type": "content_block_delta",
+            "index": state.open_index,
+            "delta": {"type": "text_delta", "text": chunk},
+        }
+    )
+    return events
+
+
+def _emit_content(state: _StreamState, content: str) -> List[Dict]:
+    """``content`` delta → text events, folding literal <think> tags if enabled."""
+    if not state.fold_think:
+        return _emit_segment(state, "text", content)
+    segments, state.in_think, state.think_carry = split_think_segments(
+        content, state.in_think, state.think_carry
+    )
+    events: List[Dict] = []
+    for kind, chunk in segments:
+        events.extend(_emit_segment(state, kind, chunk))
+    return events
+
+
 async def openai_stream_to_anthropic_events(
     chunks: AsyncIterator[Dict], model: str
 ) -> AsyncIterator[Dict]:
@@ -436,16 +574,17 @@ async def openai_stream_to_anthropic_events(
 
             content = delta.get("content")
             if content:  # empty-string content chunks must not open a block
-                for ev in _ensure_block(state, "text", {"type": "text", "text": ""}):
+                for ev in _emit_content(state, content):
                     yield ev
-                yield {
-                    "type": "content_block_delta",
-                    "index": state.open_index,
-                    "delta": {"type": "text_delta", "text": content},
-                }
 
             if delta.get("tool_calls"):
                 _buffer_tool_calls(state, delta["tool_calls"])
+
+    # A trailing partial tag that never completed is ordinary text after all.
+    if state.think_carry:
+        carry, state.think_carry = state.think_carry, ""
+        for ev in _emit_segment(state, "thinking" if state.in_think else "text", carry):
+            yield ev
 
     for ev in _flush_tool_calls(state):
         yield ev
@@ -480,7 +619,7 @@ def openai_response_to_anthropic_body(body: Dict) -> Dict:
         )
     text = message.get("content")
     if text:
-        content_blocks.append({"type": "text", "text": text})
+        content_blocks.extend(_content_to_blocks(text))
     for tc in message.get("tool_calls") or []:
         function = tc.get("function") or {}
         try:
