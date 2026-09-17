@@ -432,3 +432,97 @@ def test_nonstream_literal_think_tags_become_thinking_block():
     assert out["content"][0]["thinking"] == "\nreason\n"
     assert out["content"][0]["signature"] == ""
     assert out["content"][1]["text"] == "reply"
+
+
+# --------------------------------------------------------------------------- #
+# Reasoning effort (issue #24)
+# --------------------------------------------------------------------------- #
+#
+# The bridge used to drop `output_config.effort`: the gateway accepted the field,
+# this translation did not carry it, and the model reasoned at its default. A UI
+# effort control on this path was therefore a no-op. These pin the translation and
+# — just as important — the cases where we deliberately send nothing.
+
+
+def _effort_body(effort, **extra):
+    body = {"model": "M", "messages": [{"role": "user", "content": "hi"}], **extra}
+    if effort is not _ABSENT:
+        body["output_config"] = {"effort": effort}
+    return body
+
+
+_ABSENT = object()
+
+
+def test_effort_levels_reach_the_openai_field():
+    for level in ("minimal", "low", "medium", "high"):
+        out = anthropic_request_to_openai_body(_effort_body(level))
+        assert out["reasoning_effort"] == level, level
+
+
+def test_levels_above_high_are_clamped_not_passed_through():
+    """The SDK has xhigh/max; the OpenAI field does not define them.
+
+    Sending the string through hands the upstream a level it does not know —
+    a strict schema 400s and a lenient one ignores it. Clamping loses the
+    xhigh/max distinction, which is the smaller lie.
+    """
+    for level in ("xhigh", "max"):
+        out = anthropic_request_to_openai_body(_effort_body(level))
+        assert out["reasoning_effort"] == "high", level
+
+
+def test_case_and_padding_are_folded():
+    out = anthropic_request_to_openai_body(_effort_body("  HIGH  "))
+    assert out["reasoning_effort"] == "high"
+
+
+def test_none_is_not_a_level_and_sends_nothing():
+    """On the Anthropic side `none` disables extended thinking; it is not the
+    weakest level. Mapping it onto one would quietly turn thinking back on."""
+    assert "reasoning_effort" not in anthropic_request_to_openai_body(_effort_body("none"))
+
+
+def test_a_level_we_cannot_map_is_dropped_not_guessed():
+    for bad in ("bogus", "", "  ", "veryhigh"):
+        out = anthropic_request_to_openai_body(_effort_body(bad))
+        assert "reasoning_effort" not in out, bad
+
+
+def test_a_non_string_effort_is_dropped():
+    for bad in (7, True, [], {}, None):
+        out = anthropic_request_to_openai_body(_effort_body(bad))
+        assert "reasoning_effort" not in out, repr(bad)
+
+
+def test_a_non_dict_output_config_is_dropped():
+    for bad in ("high", ["high"], 3):
+        out = anthropic_request_to_openai_body(
+            {"model": "M", "messages": [], "output_config": bad}
+        )
+        assert "reasoning_effort" not in out, repr(bad)
+
+
+def test_no_output_config_leaves_the_payload_untouched():
+    """A request without effort must translate exactly as before."""
+    body = {"model": "M", "messages": [{"role": "user", "content": "hi"}]}
+    assert "reasoning_effort" not in anthropic_request_to_openai_body(body)
+    assert anthropic_request_to_openai_body(body) == anthropic_request_to_openai_body(
+        _effort_body(_ABSENT)
+    )
+
+
+def test_forwarding_can_be_turned_off_without_giving_up_the_bridge(monkeypatch):
+    """An upstream that validates its schema strictly may reject the extra field."""
+    monkeypatch.setenv("SANITIZER_FORWARD_REASONING_EFFORT", "false")
+    out = anthropic_request_to_openai_body(_effort_body("high"))
+    assert "reasoning_effort" not in out
+    # the rest of the translation is unaffected
+    assert out["model"] == "M"
+    assert out["messages"][-1]["role"] == "user"
+
+
+def test_forwarding_is_on_by_default(monkeypatch):
+    monkeypatch.delenv("SANITIZER_FORWARD_REASONING_EFFORT", raising=False)
+    out = anthropic_request_to_openai_body(_effort_body("medium"))
+    assert out["reasoning_effort"] == "medium"

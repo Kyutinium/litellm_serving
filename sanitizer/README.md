@@ -41,7 +41,32 @@ Every other path (`/v1/models`, direct `/v1/chat/completions`, `/v1/embeddings`,
 | `SANITIZER_TLS_VERIFY` | `true` | `true/false/…` or a CA bundle path |
 | `SANITIZER_REQUEST_TIMEOUT` | `0` | Seconds; `0`/empty/negative → no timeout |
 | `SANITIZER_USE_OPENAI_BRIDGE` | `false` | Enable the OpenAI bridge route |
+| `SANITIZER_FORWARD_REASONING_EFFORT` | `true` | Carry Anthropic `output_config.effort` into the OpenAI `reasoning_effort` field |
 | `THINK_OUTPUT_MODE` | `default` | `default` / `none` / `text` / `think_tag` / `bridge` |
+
+### Reasoning effort
+
+The bridge carries Anthropic's `output_config.effort` into the OpenAI
+`reasoning_effort` field. Before this it was dropped here, so a client that
+offered an effort control offered a no-op on this path (issue #24).
+
+The two vocabularies differ. Claude Code / oh-my-gateway send the SDK's levels
+(`low`/`medium`/`high`/`xhigh`/`max`); the OpenAI field defines
+`minimal`/`low`/`medium`/`high`. So `xhigh` and `max` are **clamped to `high`**
+(logged), and anything this bridge cannot map — an unknown level, a non-string,
+a non-dict `output_config` — sends **no field at all** rather than a guess.
+`none` is not a level on the Anthropic side (it disables extended thinking and
+rides `thinking`), so it sends nothing either.
+
+Set `SANITIZER_FORWARD_REASONING_EFFORT=false` if the upstream validates its
+request schema strictly and rejects the extra field; the rest of the bridge is
+unaffected.
+
+**Whether the backend then honors it is a separate question.** Forwarding the
+field is necessary but not sufficient — a model or a vLLM/SGLang build that
+ignores `reasoning_effort` still reasons at its default. Advertise a strong
+capability upstream only for models where the effort has been observed to change
+the request the backend actually runs.
 
 ## Topology
 

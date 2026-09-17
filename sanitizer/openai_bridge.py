@@ -15,9 +15,14 @@ Three public entry points:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from typing import AsyncIterator, Dict, List, Optional, Tuple
+
+from sanitizer import config
+
+logger = logging.getLogger("sanitizer.openai_bridge")
 
 # Note attached to a ``tool`` message whose image payload was relocated into a
 # trailing user message (OpenAI ``role:"tool"`` messages cannot carry images).
@@ -327,6 +332,63 @@ def _convert_tool_choice(tool_choice):
     return None
 
 
+# Anthropic reasoning effort → OpenAI ``reasoning_effort``.
+#
+# The two vocabularies are not the same set. Claude Code / oh-my-gateway send the
+# SDK's levels (``low``/``medium``/``high``/``xhigh``/``max``), while the OpenAI
+# chat-completions field defines ``minimal``/``low``/``medium``/``high``. Copying
+# the string through would hand an upstream a level it does not define, so the two
+# levels above ``high`` are clamped **to** ``high`` — losing the distinction
+# between xhigh and max is a smaller lie than sending a value the model will
+# reject or ignore, and the clamp is logged so an operator can see it happened.
+#
+# ``none`` is deliberately absent: on the Anthropic side it means "disable
+# extended thinking", not "the weakest level". It rides ``thinking`` instead, and
+# mapping it onto a level here would silently turn thinking back on.
+_EFFORT_TO_OPENAI = {
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "high",
+    "max": "high",
+}
+
+
+def _openai_reasoning_effort(body: Dict) -> Optional[str]:
+    """Translate ``output_config.effort`` for the OpenAI request, or ``None``.
+
+    Returns ``None`` — i.e. send no field at all — whenever the value is absent,
+    not a string, or a level this bridge cannot map. Dropping an effort we do not
+    understand is the safe direction: the alternative is an upstream 400 on a
+    strict schema, or a model quietly reasoning at some other strength.
+    """
+    if not config.forwards_reasoning_effort():
+        return None
+    output_config = body.get("output_config")
+    if not isinstance(output_config, dict):
+        return None
+    raw = output_config.get("effort")
+    if not isinstance(raw, str):
+        if raw is not None:
+            logger.warning("ignoring non-string output_config.effort=%r", raw)
+        return None
+    level = raw.strip().lower()
+    if not level or level == "none":
+        return None
+    mapped = _EFFORT_TO_OPENAI.get(level)
+    if mapped is None:
+        logger.warning(
+            "dropping unknown output_config.effort=%r (known: %s)",
+            raw,
+            ", ".join(sorted(_EFFORT_TO_OPENAI)),
+        )
+        return None
+    if mapped != level:
+        logger.info("clamping reasoning effort %r to %r for the OpenAI field", level, mapped)
+    return mapped
+
+
 def anthropic_request_to_openai_body(body: Dict) -> Dict:
     out: Dict = {}
     if body.get("model") is not None:
@@ -334,6 +396,13 @@ def anthropic_request_to_openai_body(body: Dict) -> Dict:
     for key in ("max_tokens", "temperature", "top_p"):
         if body.get(key) is not None:
             out[key] = body[key]
+
+    # Reasoning effort was dropped here before (issue #24): the gateway accepted
+    # it, this bridge did not carry it, and the model reasoned at its default —
+    # so a UI effort control was a no-op on this path.
+    effort = _openai_reasoning_effort(body)
+    if effort is not None:
+        out["reasoning_effort"] = effort
 
     stream = bool(body.get("stream"))
     out["stream"] = stream
