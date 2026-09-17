@@ -460,16 +460,30 @@ def test_effort_levels_reach_the_openai_field():
         assert out["reasoning_effort"] == level, level
 
 
-def test_levels_above_high_are_clamped_not_passed_through():
-    """The SDK has xhigh/max; the OpenAI field does not define them.
+def test_levels_above_high_are_preserved_not_clamped():
+    """``xhigh``/``max`` go through unchanged (review blocker).
 
-    Sending the string through hands the upstream a level it does not know —
-    a strict schema 400s and a lenient one ignores it. Clamping loses the
-    xhigh/max distinction, which is the smaller lie.
+    vLLM and SGLang both accept the full ``none|minimal|low|medium|high|xhigh|max``
+    set; which subset works is decided per model by its chat template. Rewriting
+    the level here would be a guess made by the one layer that does not know the
+    model.
     """
     for level in ("xhigh", "max"):
         out = anthropic_request_to_openai_body(_effort_body(level))
-        assert out["reasoning_effort"] == "high", level
+        assert out["reasoning_effort"] == level, level
+
+
+def test_xhigh_survives_for_a_template_that_rejects_high():
+    """The concrete cost of clamping: a working request turned into a 400.
+
+    Some current Qwen chat templates accept ``low|medium|xhigh`` and reject
+    ``high``. Under the old ``xhigh -> high`` clamp this request arrived at such a
+    model as an unsupported level; the level the caller asked for must survive.
+    """
+    out = anthropic_request_to_openai_body(_effort_body("xhigh"))
+
+    assert out["reasoning_effort"] == "xhigh"
+    assert out["reasoning_effort"] != "high"
 
 
 def test_case_and_padding_are_folded():

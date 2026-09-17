@@ -332,36 +332,36 @@ def _convert_tool_choice(tool_choice):
     return None
 
 
-# Anthropic reasoning effort → OpenAI ``reasoning_effort``.
+# The effort levels Claude Code / oh-my-gateway send, carried through verbatim.
 #
-# The two vocabularies are not the same set. Claude Code / oh-my-gateway send the
-# SDK's levels (``low``/``medium``/``high``/``xhigh``/``max``), while the OpenAI
-# chat-completions field defines ``minimal``/``low``/``medium``/``high``. Copying
-# the string through would hand an upstream a level it does not define, so the two
-# levels above ``high`` are clamped **to** ``high`` — losing the distinction
-# between xhigh and max is a smaller lie than sending a value the model will
-# reject or ignore, and the clamp is logged so an operator can see it happened.
+# This bridge does not know which model the request will land on, so it is the
+# wrong layer to normalize the level. vLLM's ``ChatCompletionRequest`` and
+# SGLang's OpenAI protocol both accept the full
+# ``none|minimal|low|medium|high|xhigh|max`` string set, and the subset that
+# actually works is decided per model by its chat template: some Qwen templates
+# take ``low|medium|xhigh`` and **reject** ``high``, while ``xhigh``/``max`` carry
+# real meaning on others. Rewriting ``xhigh`` to ``high`` here would therefore
+# turn a request that works into a 400 — so the level is preserved and any
+# per-model remapping belongs to the layer that knows the model (a LiteLLM
+# provider transform, or the serving template itself).
+#
+# ``minimal`` is accepted as tolerant input — the schemas above define it — but it
+# is not a Claude Code level; nothing upstream of this bridge emits it.
 #
 # ``none`` is deliberately absent: on the Anthropic side it means "disable
 # extended thinking", not "the weakest level". It rides ``thinking`` instead, and
-# mapping it onto a level here would silently turn thinking back on.
-_EFFORT_TO_OPENAI = {
-    "minimal": "minimal",
-    "low": "low",
-    "medium": "medium",
-    "high": "high",
-    "xhigh": "high",
-    "max": "high",
-}
+# treating it as a level here would silently turn thinking back on.
+_FORWARDED_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 
 
 def _openai_reasoning_effort(body: Dict) -> Optional[str]:
-    """Translate ``output_config.effort`` for the OpenAI request, or ``None``.
+    """Read ``output_config.effort`` for the OpenAI request, or ``None``.
 
     Returns ``None`` — i.e. send no field at all — whenever the value is absent,
-    not a string, or a level this bridge cannot map. Dropping an effort we do not
-    understand is the safe direction: the alternative is an upstream 400 on a
-    strict schema, or a model quietly reasoning at some other strength.
+    not a string, or a level this bridge does not recognize. Dropping an effort we
+    do not understand is the safe direction: the alternative is an upstream 400 on
+    a strict schema, or a model quietly reasoning at some other strength. A level
+    we *do* recognize is sent unchanged; see the note above.
     """
     if not config.forwards_reasoning_effort():
         return None
@@ -376,17 +376,14 @@ def _openai_reasoning_effort(body: Dict) -> Optional[str]:
     level = raw.strip().lower()
     if not level or level == "none":
         return None
-    mapped = _EFFORT_TO_OPENAI.get(level)
-    if mapped is None:
+    if level not in _FORWARDED_EFFORTS:
         logger.warning(
             "dropping unknown output_config.effort=%r (known: %s)",
             raw,
-            ", ".join(sorted(_EFFORT_TO_OPENAI)),
+            ", ".join(sorted(_FORWARDED_EFFORTS)),
         )
         return None
-    if mapped != level:
-        logger.info("clamping reasoning effort %r to %r for the OpenAI field", level, mapped)
-    return mapped
+    return level
 
 
 def anthropic_request_to_openai_body(body: Dict) -> Dict:

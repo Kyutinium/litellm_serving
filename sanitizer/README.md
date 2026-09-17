@@ -50,23 +50,36 @@ The bridge carries Anthropic's `output_config.effort` into the OpenAI
 `reasoning_effort` field. Before this it was dropped here, so a client that
 offered an effort control offered a no-op on this path (issue #24).
 
-The two vocabularies differ. Claude Code / oh-my-gateway send the SDK's levels
-(`low`/`medium`/`high`/`xhigh`/`max`); the OpenAI field defines
-`minimal`/`low`/`medium`/`high`. So `xhigh` and `max` are **clamped to `high`**
-(logged), and anything this bridge cannot map — an unknown level, a non-string,
-a non-dict `output_config` — sends **no field at all** rather than a guess.
-`none` is not a level on the Anthropic side (it disables extended thinking and
-rides `thinking`), so it sends nothing either.
+**The level is preserved, not normalized.** Claude Code / oh-my-gateway send the
+SDK's levels (`low`/`medium`/`high`/`xhigh`/`max`) and each one is forwarded
+verbatim. vLLM's `ChatCompletionRequest` and SGLang's OpenAI protocol both accept
+the full `none|minimal|low|medium|high|xhigh|max` string set, and the subset that
+actually works is decided **per model** by its chat template: some current Qwen
+templates take `low|medium|xhigh` and reject `high`, while `xhigh`/`max` carry
+real meaning on others. Rewriting a level in this bridge — which does not know
+which model the request lands on — would turn a working `xhigh` request into a
+400. Per-model remapping belongs to the layer that knows the model: a LiteLLM
+provider transform, or the serving template itself.
+
+`minimal` is accepted as tolerant input (the schemas above define it), but it is
+not a Claude Code level and nothing upstream of this bridge emits it. Anything
+the bridge does not recognize — an unknown level, a non-string, a non-dict
+`output_config` — sends **no field at all** rather than a guess. `none` is not a
+level on the Anthropic side (it disables extended thinking and rides `thinking`),
+so it sends nothing either.
 
 Set `SANITIZER_FORWARD_REASONING_EFFORT=false` if the upstream validates its
 request schema strictly and rejects the extra field; the rest of the bridge is
 unaffected.
 
-**Whether the backend then honors it is a separate question.** Forwarding the
-field is necessary but not sufficient — a model or a vLLM/SGLang build that
-ignores `reasoning_effort` still reasons at its default. Advertise a strong
-capability upstream only for models where the effort has been observed to change
-the request the backend actually runs.
+**Whether the field survives LiteLLM, and whether the backend then honors it, are
+separate questions.** Forwarding it here is necessary but not sufficient:
+`litellm_config.yaml` sets a global `drop_params: true`, so LiteLLM's own
+provider-capability judgment can still drop `reasoning_effort` before the
+upstream sees it — and a model or a vLLM/SGLang build that ignores the field
+reasons at its default anyway. Advertise a strong capability upstream only for
+models where the effort has been observed in the request the backend actually
+runs.
 
 ## Topology
 
