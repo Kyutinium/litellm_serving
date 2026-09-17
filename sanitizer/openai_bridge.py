@@ -15,9 +15,14 @@ Three public entry points:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from typing import AsyncIterator, Dict, List, Optional, Tuple
+
+from sanitizer import config
+
+logger = logging.getLogger("sanitizer.openai_bridge")
 
 # Note attached to a ``tool`` message whose image payload was relocated into a
 # trailing user message (OpenAI ``role:"tool"`` messages cannot carry images).
@@ -327,6 +332,60 @@ def _convert_tool_choice(tool_choice):
     return None
 
 
+# The effort levels Claude Code / oh-my-gateway send, carried through verbatim.
+#
+# This bridge does not know which model the request will land on, so it is the
+# wrong layer to normalize the level. vLLM's ``ChatCompletionRequest`` and
+# SGLang's OpenAI protocol both accept the full
+# ``none|minimal|low|medium|high|xhigh|max`` string set, and the subset that
+# actually works is decided per model by its chat template: some Qwen templates
+# take ``low|medium|xhigh`` and **reject** ``high``, while ``xhigh``/``max`` carry
+# real meaning on others. Rewriting ``xhigh`` to ``high`` here would therefore
+# turn a request that works into a 400 — so the level is preserved and any
+# per-model remapping belongs to the layer that knows the model (a LiteLLM
+# provider transform, or the serving template itself).
+#
+# ``minimal`` is accepted as tolerant input — the schemas above define it — but it
+# is not a Claude Code level; nothing upstream of this bridge emits it.
+#
+# ``none`` is deliberately absent: on the Anthropic side it means "disable
+# extended thinking", not "the weakest level". It rides ``thinking`` instead, and
+# treating it as a level here would silently turn thinking back on.
+_FORWARDED_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
+
+
+def _openai_reasoning_effort(body: Dict) -> Optional[str]:
+    """Read ``output_config.effort`` for the OpenAI request, or ``None``.
+
+    Returns ``None`` — i.e. send no field at all — whenever the value is absent,
+    not a string, or a level this bridge does not recognize. Dropping an effort we
+    do not understand is the safe direction: the alternative is an upstream 400 on
+    a strict schema, or a model quietly reasoning at some other strength. A level
+    we *do* recognize is sent unchanged; see the note above.
+    """
+    if not config.forwards_reasoning_effort():
+        return None
+    output_config = body.get("output_config")
+    if not isinstance(output_config, dict):
+        return None
+    raw = output_config.get("effort")
+    if not isinstance(raw, str):
+        if raw is not None:
+            logger.warning("ignoring non-string output_config.effort=%r", raw)
+        return None
+    level = raw.strip().lower()
+    if not level or level == "none":
+        return None
+    if level not in _FORWARDED_EFFORTS:
+        logger.warning(
+            "dropping unknown output_config.effort=%r (known: %s)",
+            raw,
+            ", ".join(sorted(_FORWARDED_EFFORTS)),
+        )
+        return None
+    return level
+
+
 def anthropic_request_to_openai_body(body: Dict) -> Dict:
     out: Dict = {}
     if body.get("model") is not None:
@@ -334,6 +393,13 @@ def anthropic_request_to_openai_body(body: Dict) -> Dict:
     for key in ("max_tokens", "temperature", "top_p"):
         if body.get(key) is not None:
             out[key] = body[key]
+
+    # Reasoning effort was dropped here before (issue #24): the gateway accepted
+    # it, this bridge did not carry it, and the model reasoned at its default —
+    # so a UI effort control was a no-op on this path.
+    effort = _openai_reasoning_effort(body)
+    if effort is not None:
+        out["reasoning_effort"] = effort
 
     stream = bool(body.get("stream"))
     out["stream"] = stream

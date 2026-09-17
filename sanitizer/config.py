@@ -84,6 +84,20 @@ def is_openai_bridge_enabled() -> bool:
     return raw in _TRUTHY
 
 
+def forwards_reasoning_effort() -> bool:
+    """Whether the bridge forwards Anthropic ``output_config.effort`` upstream.
+
+    Default **on**: without it the selected effort is silently dropped in the
+    bridge, so a client that offers an effort control offers a no-op (issue #24).
+    The escape hatch exists because ``reasoning_effort`` is an extra field for an
+    upstream that validates its request schema strictly — a deployment whose
+    vLLM/SGLang build rejects unknown parameters can turn the forwarding off
+    without giving up the bridge itself.
+    """
+    raw = os.environ.get("SANITIZER_FORWARD_REASONING_EFFORT", "true").strip().lower()
+    return raw not in _FALSY
+
+
 def get_think_output_mode() -> str:
     """Return the validated ``THINK_OUTPUT_MODE`` (default on invalid input)."""
     raw = os.environ.get("THINK_OUTPUT_MODE", "default").strip().lower()
