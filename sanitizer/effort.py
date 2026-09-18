@@ -1,5 +1,16 @@
 """Reasoning-effort vocabulary, per model: what each upstream accepts.
 
+**The vocabulary is learned, not hand-written.** Which levels a served model takes
+is a fact about its chat template, and the upstream states that fact itself: a
+vLLM build answers an unsupported level with a 400 whose text lists the supported
+ones, and a 1-token completion per level answers it for builds that word the error
+differently. So this module keeps a *learned* table — filled from real 400s on
+the request path (the request is then retried once with a level the model takes)
+and from an optional startup probe (:func:`probe_models`) — and publishes it on the
+relayed ``/v1/models`` as ``effort_levels`` so the gateway in front can advertise
+the same set without an operator copying it. ``SANITIZER_EFFORT_VOCABULARY`` stays
+as a manual override for an upstream that neither names its levels nor probes.
+
 The vocabularies on the two sides of this proxy do not match, and the mismatch
 is fatal rather than cosmetic. Claude Code / oh-my-gateway speak the Anthropic
 SDK levels (``low``/``medium``/``high``/``xhigh``/``max``); a vLLM build answers
@@ -52,7 +63,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Dict, Optional, Tuple
+import re
+from typing import Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
+
+import httpx
 
 logger = logging.getLogger("sanitizer.effort")
 
@@ -65,6 +79,12 @@ EFFORT_SCALE: Tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh", "m
 ENV = "SANITIZER_EFFORT_VOCABULARY"
 
 Vocabulary = Dict[str, Tuple[str, ...]]
+
+# Learned per model name (as clients send it), scale-ordered. Process-local: the
+# upstream is the source of truth and re-teaches after a restart (a 400 costs one
+# retry; the startup probe costs a handful of 1-token requests).
+_learned: Dict[str, Tuple[str, ...]] = {}
+_learned_source: Dict[str, str] = {}
 
 
 class EffortVocabularyError(ValueError):
@@ -141,10 +161,241 @@ def vocabulary() -> Vocabulary:
 
 
 def supported_levels(model: Optional[str]) -> Tuple[str, ...]:
-    """Levels declared for *model*, in scale order; empty means "forward as-is"."""
+    """Levels known for *model*, in scale order; empty means "forward as-is".
+
+    A declared entry (``SANITIZER_EFFORT_VOCABULARY``) wins over a learned one —
+    the operator override exists for upstreams that cannot be learned from.
+    """
     if not model:
         return ()
-    return vocabulary().get(model, ())
+    declared = vocabulary().get(model)
+    if declared:
+        return declared
+    return _learned.get(model, ())
+
+
+def learned_levels() -> Dict[str, Tuple[str, ...]]:
+    """The learned table (copy), for diagnostics and ``/v1/models`` enrichment."""
+    return dict(_learned)
+
+
+def known_levels() -> Dict[str, Tuple[str, ...]]:
+    """Declared ∪ learned, declared winning — everything the proxy knows."""
+    out = dict(_learned)
+    out.update(vocabulary())
+    return out
+
+
+def level_source(model: str) -> str:
+    if model in vocabulary():
+        return "declared"
+    return _learned_source.get(model, "")
+
+
+def record_levels(model: str, levels: Iterable[str], source: str) -> Tuple[str, ...]:
+    """Store what the upstream told us about *model*; returns the scale-ordered set."""
+    ordered = tuple(level for level in EFFORT_SCALE if level in set(levels))
+    if not ordered or not model:
+        return ()
+    previous = _learned.get(model)
+    _learned[model] = ordered
+    _learned_source[model] = source
+    if previous != ordered:
+        logger.info("learned effort levels for %s from %s: %s", model, source, ",".join(ordered))
+    return ordered
+
+
+def forget_learned() -> None:
+    """Drop the learned table (tests, and an operator-driven relearn)."""
+    _learned.clear()
+    _learned_source.clear()
+
+
+# The upstream tells us its vocabulary in the 400 it answers an unsupported level
+# with. vLLM's Qwen3.x template: "Unexpected reasoning effort high. Supported types
+# are xhigh (default), medium, and low." The parser is deliberately loose about
+# the sentence — any "supported …" clause whose remainder names known levels —
+# but requires the text to be about effort at all, so an unrelated 400 that
+# happens to contain a level word never teaches anything.
+_SUPPORTED_RE = re.compile(
+    r"supported\s+(?:reasoning[\s_-]*)?(?:effort[\s_-]*)?(?:types?|values?|levels?|options?|efforts?)?\s*(?:are|is|:)?\s*(.+)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def parse_supported_from_error(text: str) -> Tuple[str, ...]:
+    """Levels named in an upstream error *text*, or ``()`` when it does not say."""
+    if not text or "effort" not in text.lower():
+        return ()
+    match = _SUPPORTED_RE.search(text)
+    if not match:
+        return ()
+    tokens = set(re.findall(r"[a-z]+", match.group(1).lower()))
+    return tuple(level for level in EFFORT_SCALE if level in tokens)
+
+
+def _error_text(body: bytes | str) -> str:
+    if isinstance(body, bytes):
+        body = body.decode("utf-8", errors="replace")
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return body
+    # OpenAI/LiteLLM: {"error": {"message": …}}; FastAPI: {"detail": …}; flat {"message": …}
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict) and isinstance(err.get("message"), str):
+            return err["message"]
+        if isinstance(err, str):
+            return err
+        for key in ("message", "detail"):
+            value = data.get(key)
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (dict, list)):
+                return json.dumps(value)
+    return body
+
+
+def learn_from_upstream_error(
+    model: Optional[str], status_code: int, body: bytes | str
+) -> Tuple[str, ...]:
+    """Read an upstream 4xx for *model*; on a vocabulary statement, learn and return it.
+
+    ``()`` means the error taught nothing (not a 400, not about effort, or no level
+    names in it) — the caller relays it as before. A model with a *declared* entry
+    is never overwritten (the override stays the operator's).
+    """
+    if status_code != 400 or not model:
+        return ()
+    levels = parse_supported_from_error(_error_text(body))
+    if not levels:
+        return ()
+    if model in vocabulary():
+        logger.warning(
+            "upstream says %s accepts %s but SANITIZER_EFFORT_VOCABULARY declares %s; keeping the declaration",
+            model, ",".join(levels), ",".join(vocabulary()[model]),
+        )
+        return vocabulary()[model]
+    return record_levels(model, levels, "upstream-400")
+
+
+# ---------------------------------------------------------------------------
+# Startup probe: ask the upstream what each model takes before any client does.
+# ---------------------------------------------------------------------------
+
+ClientFactory = Callable[[], httpx.AsyncClient]
+
+# ``minimal`` is a level every current schema (vLLM, SGLang) defines but that a
+# template rarely lists, so it is the cheapest first question: a template that
+# names its set answers with the whole vocabulary in one 400. Only when that is
+# inconclusive is each level asked individually (1 token each).
+_PROBE_LEVELS: Tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def probe_enabled() -> bool:
+    raw = os.environ.get("SANITIZER_EFFORT_PROBE", "true").strip().lower()
+    return raw not in ("false", "0", "no", "off")
+
+
+def probe_headers() -> Dict[str, str]:
+    """Auth for the probe's own requests: the upstream (LiteLLM) key, if configured."""
+    key = (os.environ.get("SANITIZER_UPSTREAM_API_KEY") or os.environ.get("LITELLM_MASTER_KEY") or "").strip()
+    headers = {"content-type": "application/json"}
+    if key:
+        headers["authorization"] = f"Bearer {key}"
+    return headers
+
+
+def _probe_body(model: str, level: str) -> Dict[str, object]:
+    return {
+        "model": model,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1,
+        "stream": False,
+        "reasoning_effort": level,
+        # LiteLLM must not drop the field under drop_params — the whole point is
+        # to see whether the *model* takes it.
+        "allowed_openai_params": ["reasoning_effort"],
+    }
+
+
+async def probe_model(client: httpx.AsyncClient, upstream: str, model: str, headers: Dict[str, str]) -> Tuple[str, ...]:
+    """Learn *model*'s vocabulary from the upstream itself; ``()`` when inconclusive."""
+    url = f"{upstream.rstrip('/')}/v1/chat/completions"
+    accepted: List[str] = []
+    for level in _PROBE_LEVELS:
+        try:
+            resp = await client.post(url, json=_probe_body(model, level), headers=headers)
+        except httpx.HTTPError as exc:
+            logger.warning("effort probe for %s aborted at %s: %s", model, level, exc)
+            return ()
+        if resp.status_code == 400:
+            named = parse_supported_from_error(_error_text(resp.content))
+            if named:
+                return record_levels(model, named, "probe-400")
+            if "effort" in _error_text(resp.content).lower():
+                continue  # this level is rejected; the rest are still open questions
+            logger.warning("effort probe for %s: unrelated 400 at %s; giving up", model, level)
+            return ()
+        if 200 <= resp.status_code < 300:
+            accepted.append(level)
+            continue
+        logger.warning("effort probe for %s: status %d at %s; giving up", model, resp.status_code, level)
+        return ()
+    # Every level answered 200 or an effort-related 400 without naming the set.
+    return record_levels(model, accepted, "probe") if accepted else ()
+
+
+async def probe_models(
+    upstream: str,
+    models: Iterable[str],
+    client_factory: ClientFactory = httpx.AsyncClient,
+    headers: Optional[Dict[str, str]] = None,
+) -> Dict[str, Tuple[str, ...]]:
+    """Probe every model without a declaration; returns what was learned."""
+    learned: Dict[str, Tuple[str, ...]] = {}
+    declared = vocabulary()
+    async with client_factory() as client:
+        for model in models:
+            if model in declared:
+                continue
+            levels = await probe_model(client, upstream, model, headers or probe_headers())
+            if levels:
+                learned[model] = levels
+    return learned
+
+
+async def list_upstream_models(upstream: str, client_factory: ClientFactory = httpx.AsyncClient, headers: Optional[Dict[str, str]] = None) -> List[str]:
+    async with client_factory() as client:
+        resp = await client.get(f"{upstream.rstrip('/')}/v1/models", headers=headers or probe_headers())
+        resp.raise_for_status()
+        data = resp.json()
+    rows = data.get("data") if isinstance(data, dict) else None
+    out: List[str] = []
+    for row in rows or []:
+        model_id = row.get("id") if isinstance(row, dict) else row
+        if isinstance(model_id, str) and model_id.strip():
+            out.append(model_id.strip())
+    return out
+
+
+def enrich_models_payload(payload: object) -> object:
+    """Add ``effort_levels`` to each ``/v1/models`` row the proxy knows about.
+
+    Rows for unknown models are untouched; a payload that is not a model list is
+    returned as-is. This is how the gateway in front learns the vocabulary
+    without an operator copying it into a second config.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        return payload
+    known = known_levels()
+    if not known:
+        return payload
+    for row in payload["data"]:
+        if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"] in known:
+            row["effort_levels"] = list(known[row["id"]])
+    return payload
 
 
 def clamp_to_supported(level: str, model: Optional[str]) -> Optional[str]:
