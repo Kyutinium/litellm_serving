@@ -243,6 +243,29 @@ def render_all(reg: dict) -> dict[Path, str]:
     return out
 
 
+def include_problems(files: dict[Path, str], compose_file: Path = ROOT / "docker-compose.yml") -> list[str]:
+    """Why ``docker-compose.yml``'s ``include:`` disagrees with the rendered profiles.
+
+    The include list is the one hand-maintained line per launched model, so it is
+    the one place a new model can be rendered and still never start. Every
+    rendered ``compose/<id>.yml`` must be included, and every included path must
+    be one that is rendered (a stale entry makes ``docker compose`` refuse to
+    start at all).
+    """
+    if not compose_file.exists():
+        return [f"{compose_file.name} is missing"]
+    doc = yaml.safe_load(compose_file.read_text(encoding="utf-8")) or {}
+    included = set()
+    for entry in doc.get("include") or []:
+        path = entry.get("path") if isinstance(entry, dict) else entry
+        if isinstance(path, str):
+            included.add(path)
+    rendered = {str(p.relative_to(ROOT)) for p in files if p.parent == ROOT / "compose"}
+    problems = [f"compose/{Path(p).name} is rendered but not in {compose_file.name} include:" for p in sorted(rendered - included)]
+    problems += [f"{p} is in {compose_file.name} include: but models.yaml renders no such profile" for p in sorted(included - rendered)]
+    return problems
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true", help="fail if any rendered file differs from disk")
@@ -267,7 +290,13 @@ def main(argv: list[str]) -> int:
             path.write_text(text, encoding="utf-8")
             print(f"wrote {path.relative_to(ROOT)}")
 
+    problems = include_problems(files)
+    for problem in problems:
+        print(f"INCLUDE: {problem}", file=sys.stderr)
+
     if ns.check:
+        if problems:
+            return 1
         if drifted:
             for p in drifted:
                 print(f"DRIFT: {p.relative_to(ROOT)} does not match models.yaml", file=sys.stderr)

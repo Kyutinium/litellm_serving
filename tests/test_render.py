@@ -102,3 +102,29 @@ class RenderedCompose(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ComposeInclude(unittest.TestCase):
+    def _files(self, *ids):
+        return {render.ROOT / "compose" / f"{i}.yml": "" for i in ids}
+
+    def _compose(self, *paths):
+        d = Path(tempfile.mkdtemp())
+        f = d / "docker-compose.yml"
+        f.write_text(yaml.safe_dump({"include": [{"path": p} for p in paths], "services": {}}))
+        return f
+
+    def test_the_committed_include_list_names_exactly_the_rendered_profiles(self):
+        reg = render.load_registry(render.ROOT / "models.yaml")
+        self.assertEqual(render.include_problems(render.render_all(reg)), [])
+
+    def test_a_rendered_profile_missing_from_include_is_reported(self):
+        problems = render.include_problems(self._files("a", "b"), self._compose("compose/a.yml"))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("compose/b.yml is rendered but not in", problems[0])
+
+    def test_a_stale_include_entry_is_reported(self):
+        problems = render.include_problems(self._files("a"), self._compose("compose/a.yml", "compose/gone.yml"))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("compose/gone.yml is in", problems[0])
+
