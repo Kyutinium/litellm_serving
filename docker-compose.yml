@@ -1,12 +1,66 @@
+# One compose file, selected by profiles. Nothing starts without a profile.
+#
+#   docker compose --profile litellm up -d                 # LiteLLM only
+#   docker compose --profile litellm --profile sanitizer up -d
+#                                                          # + Anthropic-facing sanitizer
+#   docker compose --profile qwen3.6-27b up -d             # a model this repo launches
+#
+# Model profiles are GENERATED into compose/<id>.yml from models.yaml by
+# scripts/render.py and pulled in through `include` below — edit models.yaml,
+# not those files. Secrets and per-deployment values come from .env
+# (gitignored); .env.example documents every key.
+#
+# Who talks to what:
+#   oh-my-gateway  ──(its own in-gateway bridge)──▶ LiteLLM :${LITELLM_PORT}
+#   ChatDRAGON direct connection ─────────────────▶ LiteLLM :${LITELLM_PORT}
+#   Claude Code CLI ──▶ sanitizer :${SANITIZER_PORT} ──▶ LiteLLM :${LITELLM_PORT}
+
+include:
+  - path: compose/gemma-4-31b-it.yml
+  - path: compose/qwen3.6-27b.yml
+  - path: compose/supergemma4-26b.yml
+
+x-litellm-env: &litellm-env
+  LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set it in .env}
+  # strip_thinking.py (LiteLLM worker hook) reads this. `none` promotes
+  # reasoning-only output to text and hides thinking signatures — the right
+  # default for clients that use LiteLLM's own /v1/messages adapter.
+  THINK_OUTPUT_MODE: ${THINK_OUTPUT_MODE:-none}
+  SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+  REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+  NO_PROXY: localhost,127.0.0.1
+  no_proxy: localhost,127.0.0.1
+
 services:
   litellm:
+    profiles: [litellm]
+    build: .
+    network_mode: host            # model backends are reached on this host's ports
+    environment:
+      <<: *litellm-env
+      LITELLM_PORT: ${LITELLM_PORT:-3999}
+    command: ["litellm", "--config", "/app/config.yaml", "--port", "${LITELLM_PORT:-3999}", "--host", "0.0.0.0"]
+    restart: unless-stopped
+
+  sanitizer:
+    # Anthropic /v1/messages in front of LiteLLM, for clients that speak the
+    # Anthropic API directly (Claude Code CLI). oh-my-gateway does NOT need
+    # this — it carries its own bridge — so it is a separate profile.
+    profiles: [sanitizer]
     build: .
     network_mode: host
     environment:
-      - LITELLM_MASTER_KEY=sk-1234
-      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-      - REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
-      - NO_PROXY=localhost,127.0.0.1
-      - no_proxy=localhost,127.0.0.1
-      - OPENAI_API_BASE=http://localhost:8088/v1
-      - THINK_OUTPUT_MODE=none
+      UPSTREAM_BASE_URL: http://localhost:${LITELLM_PORT:-3999}
+      SANITIZER_PORT: ${SANITIZER_PORT:-3996}
+      SANITIZER_USE_OPENAI_BRIDGE: ${SANITIZER_USE_OPENAI_BRIDGE:-true}
+      # The sanitizer's OWN think mode (sanitizer/output_transform.py); it is a
+      # different consumer from strip_thinking.py above, so it gets its own
+      # key and falls back to THINK_OUTPUT_MODE when unset.
+      SANITIZER_THINK_OUTPUT_MODE: ${SANITIZER_THINK_OUTPUT_MODE:-default}
+      # Per-model effort levels each upstream accepts (rendered from models.yaml
+      # into .env.rendered). Unset = forward verbatim.
+      SANITIZER_EFFORT_VOCABULARY: ${SANITIZER_EFFORT_VOCABULARY:-}
+      SANITIZER_REQUEST_TIMEOUT: ${SANITIZER_REQUEST_TIMEOUT:-0}
+      SANITIZER_TLS_VERIFY: ${SANITIZER_TLS_VERIFY:-true}
+    command: ["python", "-m", "uvicorn", "sanitizer.main:app", "--host", "0.0.0.0", "--port", "${SANITIZER_PORT:-3996}", "--log-level", "info"]
+    restart: unless-stopped
