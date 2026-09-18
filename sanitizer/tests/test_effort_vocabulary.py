@@ -171,6 +171,17 @@ def test_bridge_sends_a_level_this_models_upstream_accepts(declared):
     assert anthropic_request_to_openai_body(_messages_body("high", GLM))["reasoning_effort"] == "high"
 
 
+def test_bridge_pins_the_field_through_litellm_for_a_declared_model(declared):
+    """``drop_params: true`` would drop ``reasoning_effort`` for an ``openai/``
+    entry; the declaration says this model's server takes it, so the bridge asks
+    LiteLLM to forward the field verbatim. Undeclared models keep LiteLLM's call."""
+    out = anthropic_request_to_openai_body(_messages_body("medium"))
+    assert out["reasoning_effort"] == "medium"
+    assert out["allowed_openai_params"] == ["reasoning_effort"]
+    assert "allowed_openai_params" not in anthropic_request_to_openai_body(_messages_body("medium", GLM))
+    assert "allowed_openai_params" not in anthropic_request_to_openai_body(_messages_body("none"))
+
+
 def test_bridge_still_forwards_verbatim_without_a_declaration(monkeypatch):
     monkeypatch.delenv(ENV, raising=False)
     assert anthropic_request_to_openai_body(_messages_body("high"))["reasoning_effort"] == "high"

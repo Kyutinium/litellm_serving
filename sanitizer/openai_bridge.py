@@ -21,7 +21,7 @@ import uuid
 from typing import AsyncIterator, Dict, List, Optional, Tuple
 
 from sanitizer import config
-from sanitizer.effort import clamp_to_supported
+from sanitizer.effort import clamp_to_supported, supported_levels
 
 logger = logging.getLogger("sanitizer.openai_bridge")
 
@@ -403,6 +403,18 @@ def anthropic_request_to_openai_body(body: Dict) -> Dict:
     effort = _openai_reasoning_effort(body)
     if effort is not None:
         out["reasoning_effort"] = effort
+        # ``allowed_openai_params`` is LiteLLM's per-request escape hatch: the
+        # named field is forwarded verbatim even where a provider transform would
+        # drop it under this repository's ``drop_params: true``. Measured against
+        # LiteLLM 1.101 proxy the ``hosted_vllm/`` and ``openai/`` entries forward
+        # ``reasoning_effort`` on their own; other provider prefixes and other
+        # LiteLLM versions decide differently, so the pin is sent ONLY for a model
+        # whose upstream vocabulary the operator declared
+        # (``SANITIZER_EFFORT_VOCABULARY``) — the declaration IS the statement
+        # that this model's server takes the field, so it must not be dropped on
+        # the way. An undeclared model keeps LiteLLM's own judgment.
+        if supported_levels(body.get("model")):
+            out["allowed_openai_params"] = ["reasoning_effort"]
 
     stream = bool(body.get("stream"))
     out["stream"] = stream

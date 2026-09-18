@@ -126,6 +126,21 @@ exception** — a chat-completions POST for a declared model whose
 Any other body, an unparseable body, an undeclared model, a level already
 declared, and an unset switch all relay the original bytes.
 
+For a model with a declaration the bridge also sends LiteLLM's per-request
+`allowed_openai_params: ["reasoning_effort"]`, so the field is forwarded verbatim
+even where a provider transform would drop it under `drop_params: true`
+(measured: LiteLLM 1.101 forwards it for `hosted_vllm/` and `openai/` entries by
+itself; the pin covers other prefixes and versions). Undeclared models keep
+LiteLLM's own judgment.
+
+The same declaration belongs on the gateway side: `oh-my-gateway` reads
+`CLAUDE_CUSTOM_UPSTREAM_EFFORT_MODELS=qwen3.6-27b=low|medium|xhigh,…` and then
+advertises `capabilities.reasoning_effort: true` + `effort_levels` for that id on
+`/v1/models`, so a client (ChatDRAGON) offers exactly the declared levels and the
+gateway answers a level outside them with a 400 before it reaches this proxy.
+Keep the two values identical; this sanitizer's clamp is the safety net for
+callers that do not go through the gateway.
+
 **Whether the field survives LiteLLM, and whether the backend then honors it, are
 separate questions.** Forwarding it here is necessary but not sufficient:
 `litellm_config.yaml` sets a global `drop_params: true`, so LiteLLM's own
