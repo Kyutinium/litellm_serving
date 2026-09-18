@@ -5,9 +5,9 @@ Everything that is not ``POST /v1/messages`` (``/v1/models``, direct
 without parsing or transforming the body: method, headers (minus hop-by-hop),
 query string, status, and streaming chunks are all preserved.
 
-**One documented exception**, and only while ``SANITIZER_EFFORT_SUPPORTED``
-declares what the upstream accepts: a chat-completions POST whose
-``reasoning_effort`` is outside that set has that one field clamped
+**One documented exception**, and only while ``SANITIZER_EFFORT_VOCABULARY``
+declares what a model's upstream accepts: a chat-completions POST for such a
+model whose ``reasoning_effort`` is outside that set has that one field clamped
 (:mod:`sanitizer.effort`). Without it the upstream answers 400 and the caller —
 which speaks the OpenAI-standard vocabulary and not the served model's — has no
 way to know why (issue #26). Everything about the relay is unchanged: any other
@@ -26,7 +26,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import get_request_timeout_seconds, get_tls_verify, get_upstream_url
-from .effort import clamp_to_supported, supported_levels
+from .effort import clamp_to_supported, vocabulary
 from .routes_messages import _clean_request_headers, _clean_response_headers
 
 logger = logging.getLogger("sanitizer.routes_passthrough")
@@ -54,7 +54,7 @@ def _clamped_body(path: str, method: str, body: bytes) -> Optional[bytes]:
     ``reasoning_effort``, and a level that already needs no change. Re-encoding
     is deliberately confined to that one field's value.
     """
-    if method != "POST" or not _is_chat_completions(path) or not supported_levels():
+    if method != "POST" or not _is_chat_completions(path) or not vocabulary():
         return None
     try:
         parsed = json.loads(body)
@@ -65,7 +65,10 @@ def _clamped_body(path: str, method: str, body: bytes) -> Optional[bytes]:
     requested = parsed.get("reasoning_effort")
     if not isinstance(requested, str):
         return None
-    chosen = clamp_to_supported(requested.strip().lower())
+    model = parsed.get("model")
+    chosen = clamp_to_supported(
+        requested.strip().lower(), model if isinstance(model, str) else None
+    )
     if chosen is None or chosen == requested:
         return None
     parsed["reasoning_effort"] = chosen

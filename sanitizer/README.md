@@ -42,7 +42,7 @@ Every other path (`/v1/models`, direct `/v1/chat/completions`, `/v1/embeddings`,
 | `SANITIZER_REQUEST_TIMEOUT` | `0` | Seconds; `0`/empty/negative → no timeout |
 | `SANITIZER_USE_OPENAI_BRIDGE` | `false` | Enable the OpenAI bridge route |
 | `SANITIZER_FORWARD_REASONING_EFFORT` | `true` | Carry Anthropic `output_config.effort` into the OpenAI `reasoning_effort` field |
-| `SANITIZER_EFFORT_SUPPORTED` | *(unset)* | Effort levels the upstream accepts, e.g. `low,medium,xhigh`. Unset = forward verbatim |
+| `SANITIZER_EFFORT_VOCABULARY` | *(unset)* | JSON map of model name → effort levels its upstream accepts. Unset = forward verbatim; a model with no entry = verbatim |
 | `THINK_OUTPUT_MODE` | `default` | `default` / `none` / `text` / `think_tag` / `bridge` |
 
 ### Reasoning effort
@@ -73,7 +73,7 @@ Set `SANITIZER_FORWARD_REASONING_EFFORT=false` if the upstream validates its
 request schema strictly and rejects the extra field; the rest of the bridge is
 unaffected.
 
-### Declaring what the upstream accepts
+### Declaring what each model's upstream accepts
 
 A vLLM build answers a level it does not know with a **400 that takes the whole
 turn**, not by ignoring it:
@@ -84,31 +84,47 @@ Unexpected reasoning effort high. Supported types are xhigh (default), medium, a
 
 So `high` — the level a caller using the OpenAI-standard vocabulary is most
 likely to send — kills every request on that upstream (issue #26). Which levels
-a model accepts comes from its chat template, which this proxy cannot read off
-the request, so it is declared:
+a model accepts comes from its chat template, and one sanitizer fronts a LiteLLM
+that routes to **many** models whose accepted subsets differ, so the declaration
+is per model, keyed by the name exactly as clients send it:
 
 ```bash
-SANITIZER_EFFORT_SUPPORTED=low,medium,xhigh
+SANITIZER_EFFORT_VOCABULARY='{"qwen3.6-27b": "low,medium,xhigh", "Qwen3.6-27B": "low,medium,xhigh"}'
 ```
 
-With the set declared, an unsupported level is clamped to the nearest supported
-one, **preferring upward** — `high` and `max` become `xhigh`, `minimal` becomes
-`low` — because reasoning less than the caller asked for is the worse of the two
-failures. When nothing above is supported the nearest level below is used. The
-clamp is logged.
+LiteLLM names are case-sensitive and this repository registers case variants as
+separate aliases, so list every alias a client may send (the config renderer
+expands them from `models.yaml`). A model with no entry is forwarded verbatim.
 
-Unset or empty means **forward verbatim** (the default): normalizing a level
-without knowing the model is a guess, and a wrong guess turns a working request
-into a 400 — which is what the earlier blanket `xhigh`→`high` mapping did. An
-entry outside the known scale is dropped with a warning, and a value that leaves
-no usable level also forwards verbatim, so a typo degrades to the default rather
-than to 400s.
+With a model's set declared, an unsupported level is clamped to the nearest
+declared one, **preferring upward** — `high` and `max` become `xhigh`, `minimal`
+becomes `low` — because reasoning less than the caller asked for is the worse of
+the two failures. When nothing above is declared the nearest level below is
+used. The clamp is logged. Note what this does *not* do: on a three-level
+upstream `high`/`xhigh`/`max` all arrive as `xhigh`, so they are deliberately
+collapsed at the model input. Preventing the 400 is this proxy's job; telling
+users which levels a model really offers belongs to the capability surface
+upstream of it (the gateway's `/v1/models`).
+
+Unset or empty means **forward verbatim** for every model (the default):
+normalizing a level without knowing the model is a guess, and a wrong guess
+turns a working request into a 400 — which is what the earlier blanket
+`xhigh`→`high` mapping did.
+
+**Validity is all-or-nothing.** A typo (`"low,medium,xhi"`) must not quietly
+become a *narrower* declaration that clamps good levels away — dropping the
+unknown entry and keeping the rest does exactly that. So an unknown level,
+a wrong shape, or unparseable JSON makes the whole setting invalid: the process
+**refuses to start**, and a request served under an invalid setting anyway (the
+env changed under a running process) is forwarded verbatim for every model with
+one warning. Invalid never narrows.
 
 This applies on both ingress paths. On the bridge it picks the level the
 translated body carries; on the byte-for-byte relay it is the **one documented
-exception** — a chat-completions POST whose `reasoning_effort` needs changing is
-re-encoded with just that field replaced. Any other body, an unparseable body, a
-level already supported, and an unset switch all relay the original bytes.
+exception** — a chat-completions POST for a declared model whose
+`reasoning_effort` needs changing is re-encoded with just that field replaced.
+Any other body, an unparseable body, an undeclared model, a level already
+declared, and an unset switch all relay the original bytes.
 
 **Whether the field survives LiteLLM, and whether the backend then honors it, are
 separate questions.** Forwarding it here is necessary but not sufficient:

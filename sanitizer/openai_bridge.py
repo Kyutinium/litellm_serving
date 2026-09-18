@@ -384,9 +384,9 @@ def _openai_reasoning_effort(body: Dict) -> Optional[str]:
             ", ".join(sorted(_FORWARDED_EFFORTS)),
         )
         return None
-    # Verbatim unless the operator declared what the upstream accepts; a level
-    # outside that set is a 400 that takes the whole turn with it (issue #26).
-    return clamp_to_supported(level)
+    # Verbatim unless the operator declared what THIS model's upstream accepts;
+    # a level outside that set is a 400 that takes the whole turn (issue #26).
+    return clamp_to_supported(level, body.get("model"))
 
 
 def anthropic_request_to_openai_body(body: Dict) -> Dict:

@@ -12,6 +12,7 @@ import logging
 from fastapi import FastAPI
 
 from . import routes_messages, routes_passthrough
+from .effort import validate_at_startup
 from .config import (
     get_port,
     get_think_output_mode,
@@ -37,6 +38,9 @@ app.include_router(routes_passthrough.router)
 
 @app.on_event("startup")
 async def _log_active_config() -> None:
+    # A typo in the declared effort vocabulary must not go live as a narrower
+    # declaration; refuse to start instead (see sanitizer.effort).
+    validate_at_startup()
     logger.info(
         "sanitizer started: port=%d upstream=%s bridge=%s think_mode=%s",
         get_port(),
