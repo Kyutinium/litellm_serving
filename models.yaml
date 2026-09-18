@@ -1,0 +1,147 @@
+# models.yaml — the one place a model's facts live.
+#
+# Everything else about a model is RENDERED from this file by scripts/render.py:
+#   litellm_config.yaml          every alias expanded into a LiteLLM entry
+#   compose/<id>.yml             one compose profile per model (vllm / llamacpp)
+#   .env.rendered                env the sanitizer/LiteLLM read (effort vocabulary)
+# `python3 scripts/render.py --check` fails when a rendered file drifts from
+# what is committed, so this file cannot silently stop describing reality.
+#
+# Deployments keep their own registry OUT of git: point MODELS_FILE at a
+# models.local.yaml (gitignored) with the same shape, and render from that.
+#
+# Fields
+#   id        canonical LiteLLM name (what clients send; case-sensitive)
+#   aliases   other names clients send for the SAME backend — case variants,
+#             `claude-*` for Claude Code's discovery filter, product names.
+#             Each becomes its own LiteLLM entry with identical params.
+#   roles     who this model is meant for; documentation + a README table.
+#               gateway  oh-my-gateway → its in-gateway bridge → LiteLLM
+#               direct   ChatDRAGON direct connection / Claude Code CLI →
+#                        standalone sanitizer → LiteLLM
+#   serve     how the model process runs (rendered into a compose profile)
+#   litellm   the LiteLLM entry params for every alias
+#   sanitizer effort levels THIS model's upstream accepts (vLLM 400s on others)
+
+defaults:
+  litellm:
+    api_key: EMPTY
+
+models:
+  - id: glm-5-fp8
+    aliases: [GLM-5-FP8]
+    roles: [gateway, direct]
+    serve:
+      engine: external            # launched outside this repo; only the port is known
+      port: 8088
+    litellm:
+      provider: hosted_vllm
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+
+  - id: glm-5.1-fp8
+    aliases: [GLM-5.1-FP8]
+    roles: [gateway, direct]
+    serve:
+      engine: external
+      port: 8089
+    litellm:
+      provider: hosted_vllm
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+
+  - id: Qwen3.5-122B-A10B
+    aliases: []
+    roles: [direct]
+    serve:
+      engine: external
+      host: 127.0.0.1
+      port: 10036
+    litellm:
+      provider: openai
+      max_tokens: 16384
+      merge_reasoning_content_in_choices: true
+
+  - id: SAMUEL-v2
+    aliases: []
+    roles: [direct]
+    serve:
+      engine: external
+      port: 8020
+    litellm:
+      provider: hosted_vllm
+      max_tokens: 131072
+      merge_reasoning_content_in_choices: true
+
+  - id: gemma-4-31b-it
+    aliases: [Gemma-4-31B-IT]
+    roles: [gateway, direct]
+    serve:
+      engine: vllm
+      image: vllm/vllm-openai:gemma4
+      checkpoint: /home/kyvhyvn.shim/data/checkpoints/gemma-4-31B-it
+      gpus: ["2", "3", "4", "5"]
+      port: 8090
+      args:
+        tensor-parallel-size: "4"
+        max-model-len: "262144"
+        gpu-memory-utilization: "0.90"
+        dtype: bfloat16
+        trust-remote-code: null
+        limit-mm-per-prompt: '{"image": 0, "audio": 0}'
+        enable-auto-tool-choice: null
+        tool-call-parser: gemma4
+        reasoning-parser: gemma4
+        chat-template: /model/chat_template.jinja
+      environment:
+        PYTHONWARNINGS: ignore::FutureWarning
+    litellm:
+      provider: hosted_vllm
+      max_tokens: 262144
+
+  - id: supergemma4-26b
+    aliases: [SuperGemma4-26B]
+    roles: [direct]
+    serve:
+      engine: llamacpp
+      image: ghcr.io/ggml-org/llama.cpp:server-cuda
+      checkpoint: /shared/checkpoints/supergemma4-26b-uncensored-gguf-v2
+      gguf: ""                    # empty = first *.gguf in the checkpoint dir
+      gpus: all
+      port: 8091
+      args:
+        n-gpu-layers: "99"
+        ctx-size: "8192"
+        threads: "8"
+        parallel: "4"
+        flash-attn: null
+        metrics: null
+    litellm:
+      provider: openai
+      max_tokens: 8192
+
+  - id: qwen3.6-27b
+    aliases: [Qwen3.6-27B]
+    roles: [gateway, direct]
+    serve:
+      engine: vllm
+      image: vllm/vllm-openai:latest
+      checkpoint: /shared/checkpoints/to_supercom/Qwen/Qwen3.6-27B
+      gpus: ["2", "3", "4", "5"]
+      port: 8092
+      args:
+        tensor-parallel-size: "4"
+        max-model-len: "32768"
+        gpu-memory-utilization: "0.90"
+        dtype: bfloat16
+        trust-remote-code: null
+        enable-auto-tool-choice: null
+        tool-call-parser: qwen3_coder
+    litellm:
+      provider: hosted_vllm
+      max_tokens: 32768
+      merge_reasoning_content_in_choices: true
+    sanitizer:
+      # What this vLLM build's Qwen template accepts (its own 400 message
+      # names them). Anything else is clamped, upward first: high -> xhigh.
+      effort_supported: [low, medium, xhigh]
