@@ -26,6 +26,7 @@ from .config import (
     get_upstream_url,
     is_openai_bridge_enabled,
 )
+from .effort import learn_from_upstream_error
 from .openai_bridge import (
     anthropic_request_to_openai_body,
     openai_response_to_anthropic_body,
@@ -191,11 +192,31 @@ async def sanitize_messages(request: Request):
         target_url = f"{upstream}/v1/messages"
         content = raw
 
-    if is_stream:
-        return await _handle_streaming(
-            target_url, content, headers, timeout, use_bridge, think_mode, body
-        )
-    return await _handle_non_streaming(target_url, content, headers, timeout, use_bridge)
+    async def send(payload: bytes):
+        if is_stream:
+            return await _handle_streaming(
+                target_url, payload, headers, timeout, use_bridge, think_mode, body
+            )
+        return await _handle_non_streaming(target_url, payload, headers, timeout, use_bridge)
+
+    response = await send(content)
+    # The upstream teaches its vocabulary in the 400 it answers an unsupported
+    # level with (issue #26). Learn it and retry ONCE with a level this model
+    # takes, so the caller — who speaks the SDK's ladder, not the template's —
+    # gets an answer instead of a 400 and a CLI retry without effort. Only when
+    # the retranslated body actually changes; anything else relays the 400.
+    if use_bridge and _is_plain_400(response) and body.get("output_config"):
+        if learn_from_upstream_error(body.get("model"), 400, bytes(response.body)):
+            retried = json.dumps(anthropic_request_to_openai_body(body)).encode()
+            if retried != content:
+                logger.info("retrying %s with a learned effort level", body.get("model"))
+                response = await send(retried)
+    return response
+
+
+def _is_plain_400(response) -> bool:
+    """A buffered (non-streaming) 400 — the only shape we can read and retry."""
+    return isinstance(response, Response) and response.status_code == 400 and not isinstance(response, StreamingResponse)
 
 
 async def _handle_non_streaming(

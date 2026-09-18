@@ -15,6 +15,16 @@ services:
       # Sanitizer listens here; point clients' ANTHROPIC_BASE_URL at it.
       - SANITIZER_PORT=5501
       - SANITIZER_USE_OPENAI_BRIDGE=true
+      # Effort levels are LEARNED per model: the sanitizer probes each listed
+      # model at startup (SANITIZER_EFFORT_PROBE, default true; uses
+      # LITELLM_MASTER_KEY above) and reads the vocabulary a vLLM build names in
+      # its 400 ("Unexpected reasoning effort high. Supported types are xhigh
+      # (default), medium, and low." — #26), retrying the request once. What it
+      # knows is published on /v1/models as effort_levels for the gateway.
+      # Manual override only for an upstream that states nothing (JSON: model
+      # name as the client sends it -> levels; one typo invalidates the whole
+      # setting and the sanitizer refuses to start):
+      # - SANITIZER_EFFORT_VOCABULARY={"qwen3.6-27b":"low,medium,xhigh","Qwen3.6-27B":"low,medium,xhigh"}
       - THINK_OUTPUT_MODE=default
       - LOG_LEVEL=INFO
     volumes:
