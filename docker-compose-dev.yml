@@ -15,6 +15,13 @@ services:
       # Sanitizer listens here; point clients' ANTHROPIC_BASE_URL at it.
       - SANITIZER_PORT=5501
       - SANITIZER_USE_OPENAI_BRIDGE=true
+      # Effort levels the upstream accepts. Unset = forward verbatim, which is
+      # a 400 on a build that does not know the level the caller sent (#26):
+      #   Unexpected reasoning effort high. Supported types are xhigh
+      #   (default), medium, and low.
+      # That set is what the vLLM behind ChatDRAGON-Medium reported; uncomment
+      # (and adjust per this deployment's models) to clamp instead of 400.
+      # - SANITIZER_EFFORT_SUPPORTED=low,medium,xhigh
       - THINK_OUTPUT_MODE=default
       - LOG_LEVEL=INFO
     volumes:

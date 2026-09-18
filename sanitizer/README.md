@@ -42,6 +42,7 @@ Every other path (`/v1/models`, direct `/v1/chat/completions`, `/v1/embeddings`,
 | `SANITIZER_REQUEST_TIMEOUT` | `0` | Seconds; `0`/empty/negative → no timeout |
 | `SANITIZER_USE_OPENAI_BRIDGE` | `false` | Enable the OpenAI bridge route |
 | `SANITIZER_FORWARD_REASONING_EFFORT` | `true` | Carry Anthropic `output_config.effort` into the OpenAI `reasoning_effort` field |
+| `SANITIZER_EFFORT_SUPPORTED` | *(unset)* | Effort levels the upstream accepts, e.g. `low,medium,xhigh`. Unset = forward verbatim |
 | `THINK_OUTPUT_MODE` | `default` | `default` / `none` / `text` / `think_tag` / `bridge` |
 
 ### Reasoning effort
@@ -71,6 +72,43 @@ so it sends nothing either.
 Set `SANITIZER_FORWARD_REASONING_EFFORT=false` if the upstream validates its
 request schema strictly and rejects the extra field; the rest of the bridge is
 unaffected.
+
+### Declaring what the upstream accepts
+
+A vLLM build answers a level it does not know with a **400 that takes the whole
+turn**, not by ignoring it:
+
+```
+Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low.
+```
+
+So `high` — the level a caller using the OpenAI-standard vocabulary is most
+likely to send — kills every request on that upstream (issue #26). Which levels
+a model accepts comes from its chat template, which this proxy cannot read off
+the request, so it is declared:
+
+```bash
+SANITIZER_EFFORT_SUPPORTED=low,medium,xhigh
+```
+
+With the set declared, an unsupported level is clamped to the nearest supported
+one, **preferring upward** — `high` and `max` become `xhigh`, `minimal` becomes
+`low` — because reasoning less than the caller asked for is the worse of the two
+failures. When nothing above is supported the nearest level below is used. The
+clamp is logged.
+
+Unset or empty means **forward verbatim** (the default): normalizing a level
+without knowing the model is a guess, and a wrong guess turns a working request
+into a 400 — which is what the earlier blanket `xhigh`→`high` mapping did. An
+entry outside the known scale is dropped with a warning, and a value that leaves
+no usable level also forwards verbatim, so a typo degrades to the default rather
+than to 400s.
+
+This applies on both ingress paths. On the bridge it picks the level the
+translated body carries; on the byte-for-byte relay it is the **one documented
+exception** — a chat-completions POST whose `reasoning_effort` needs changing is
+re-encoded with just that field replaced. Any other body, an unparseable body, a
+level already supported, and an unset switch all relay the original bytes.
 
 **Whether the field survives LiteLLM, and whether the backend then honors it, are
 separate questions.** Forwarding it here is necessary but not sufficient:

@@ -21,6 +21,7 @@ import uuid
 from typing import AsyncIterator, Dict, List, Optional, Tuple
 
 from sanitizer import config
+from sanitizer.effort import clamp_to_supported
 
 logger = logging.getLogger("sanitizer.openai_bridge")
 
@@ -383,7 +384,9 @@ def _openai_reasoning_effort(body: Dict) -> Optional[str]:
             ", ".join(sorted(_FORWARDED_EFFORTS)),
         )
         return None
-    return level
+    # Verbatim unless the operator declared what the upstream accepts; a level
+    # outside that set is a 400 that takes the whole turn with it (issue #26).
+    return clamp_to_supported(level)
 
 
 def anthropic_request_to_openai_body(body: Dict) -> Dict:
