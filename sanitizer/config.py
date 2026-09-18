@@ -99,11 +99,23 @@ def forwards_reasoning_effort() -> bool:
 
 
 def get_think_output_mode() -> str:
-    """Return the validated ``THINK_OUTPUT_MODE`` (default on invalid input)."""
-    raw = os.environ.get("THINK_OUTPUT_MODE", "default").strip().lower()
+    """Return the sanitizer's validated think-output mode.
+
+    Read from ``SANITIZER_THINK_OUTPUT_MODE`` first. ``THINK_OUTPUT_MODE`` is
+    also read by ``strip_thinking.py`` inside LiteLLM, whose modes mean
+    something different (it patches LiteLLM's own Anthropic adapter), so a
+    deployment running both processes needs to set them independently. The
+    shared name remains the fallback so existing deployments keep working.
+    """
+    raw = os.environ.get("SANITIZER_THINK_OUTPUT_MODE", "").strip().lower()
+    source = "SANITIZER_THINK_OUTPUT_MODE"
+    if not raw:
+        raw = os.environ.get("THINK_OUTPUT_MODE", "default").strip().lower()
+        source = "THINK_OUTPUT_MODE"
     if raw not in _VALID_THINK_MODES:
         logger.warning(
-            "invalid THINK_OUTPUT_MODE=%r, falling back to 'default'. valid: %s",
+            "invalid %s=%r, falling back to 'default'. valid: %s",
+            source,
             raw,
             _VALID_THINK_MODES,
         )

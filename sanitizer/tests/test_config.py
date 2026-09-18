@@ -84,3 +84,23 @@ def test_think_output_mode_valid_and_invalid(monkeypatch):
     assert config.get_think_output_mode() == "default"
     monkeypatch.delenv("THINK_OUTPUT_MODE", raising=False)
     assert config.get_think_output_mode() == "default"
+
+
+def test_sanitizer_think_mode_has_its_own_key_and_falls_back(monkeypatch):
+    """Two processes read think modes with different meanings.
+
+    ``THINK_OUTPUT_MODE`` also drives ``strip_thinking.py`` inside LiteLLM, so
+    the sanitizer gets its own key; the shared name stays a fallback so an
+    existing deployment that only sets THINK_OUTPUT_MODE is unchanged.
+    """
+    from sanitizer.config import get_think_output_mode
+
+    monkeypatch.delenv("SANITIZER_THINK_OUTPUT_MODE", raising=False)
+    monkeypatch.setenv("THINK_OUTPUT_MODE", "none")
+    assert get_think_output_mode() == "none", "fallback to the shared key"
+
+    monkeypatch.setenv("SANITIZER_THINK_OUTPUT_MODE", "bridge")
+    assert get_think_output_mode() == "bridge", "own key wins"
+
+    monkeypatch.setenv("SANITIZER_THINK_OUTPUT_MODE", "bogus")
+    assert get_think_output_mode() == "default", "invalid own key -> default, not fallback"
