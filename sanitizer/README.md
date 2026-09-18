@@ -42,7 +42,7 @@ Every other path (`/v1/models`, direct `/v1/chat/completions`, `/v1/embeddings`,
 | `SANITIZER_REQUEST_TIMEOUT` | `0` | Seconds; `0`/empty/negative → no timeout |
 | `SANITIZER_USE_OPENAI_BRIDGE` | `false` | Enable the OpenAI bridge route |
 | `SANITIZER_FORWARD_REASONING_EFFORT` | `true` | Carry Anthropic `output_config.effort` into the OpenAI `reasoning_effort` field |
-| `THINK_OUTPUT_MODE` | `default` | `default` / `none` / `text` / `think_tag` / `bridge` |
+| `SANITIZER_THINK_OUTPUT_MODE` | `default` | `default` / `none` / `text` / `think_tag` / `bridge` — the sanitizer's own think mode; falls back to `THINK_OUTPUT_MODE` when unset (that name is also read by LiteLLM's `strip_thinking.py`, so use this one to move them independently) |
 
 ### Reasoning effort
 
@@ -97,8 +97,8 @@ client / gateway  (Anthropic /v1/messages)
 PYTHONPATH=. SANITIZER_USE_OPENAI_BRIDGE=true \
   python -m uvicorn sanitizer.main:app --host 0.0.0.0 --port 5501
 
-# Docker (sanitizer + LiteLLM in one container)
-docker compose -f docker-compose-dev.yml up -d --build
+# Docker (same image as LiteLLM; the profile picks the process)
+docker compose --profile litellm --profile sanitizer up -d --build
 ```
 
 ## Tests

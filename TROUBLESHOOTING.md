@@ -97,7 +97,7 @@ If both `content` and `reasoning_content` are absent/empty across the stream, th
 ```bash
 # Test LiteLLM directly (OpenAI format — works)
 curl http://localhost:3999/v1/chat/completions \
-  -H "Authorization: Bearer sk-1234" \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model": "glm-5-fp8", "messages": [{"role": "user", "content": "Hello!"}]}'
 
@@ -108,5 +108,5 @@ curl http://localhost:8088/v1/chat/completions \
   -d '{"model": "glm-5-fp8", "messages": [{"role": "user", "content": "Hello!"}]}'
 
 # List available models on LiteLLM
-curl http://localhost:3999/v1/models -H "Authorization: Bearer sk-1234"
+curl http://localhost:3999/v1/models -H "Authorization: Bearer $LITELLM_MASTER_KEY"
 ```
