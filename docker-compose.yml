@@ -18,3 +18,9 @@ services:
       - LITELLM_PORT=3999
       - SANITIZER_PORT=3996
       - UPSTREAM_BASE_URL=http://localhost:3999
+      # The bridge must be on for the published effort_levels to describe the
+      # path /v1/messages clients actually take: it carries output_config.effort
+      # onto the same /v1/chat/completions reasoning_effort field the levels were
+      # learned on (clamped to that set). Off = raw relay to LiteLLM's Anthropic
+      # adapter, where neither the translation nor the clamp applies.
+      - SANITIZER_USE_OPENAI_BRIDGE=true

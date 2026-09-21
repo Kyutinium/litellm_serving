@@ -8,6 +8,15 @@ FROM ghcr.io/berriai/litellm:main-stable
 # client that talks to :3999 directly gets neither the levels nor the clamp, so
 # point ANTHROPIC_BASE_URL at :3996. The sanitizer imports only fastapi, httpx
 # and uvicorn, all of which the LiteLLM image already ships.
+#
+# The bridge is ON in production, as in docker-compose-dev.yml. The published
+# ``effort_levels`` are learned on /v1/chat/completions (probe + 400s), and it
+# is the bridge that carries the Anthropic ``output_config.effort`` of a
+# /v1/messages request onto that same field and path (clamped to the learned
+# set). With the bridge off, /v1/messages is relayed raw to LiteLLM's own
+# Anthropic adapter, where neither the translation nor the clamp applies — so
+# the levels this image publishes would not describe the path clients use.
+# ``sanitizer/tests/test_production_topology.py`` pins this pairing.
 COPY litellm_config.yaml /app/config.yaml
 COPY strip_thinking.py /app/strip_thinking.py
 COPY sanitizer /app/sanitizer
@@ -20,6 +29,7 @@ ENV THINK_OUTPUT_MODE=none
 ENV LITELLM_PORT=3999
 ENV SANITIZER_PORT=3996
 ENV UPSTREAM_BASE_URL=http://localhost:3999
+ENV SANITIZER_USE_OPENAI_BRIDGE=true
 
 EXPOSE 3999 3996
 

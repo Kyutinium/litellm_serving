@@ -156,9 +156,14 @@ Anthropic `/v1/messages` 엔드포인트를 노출하면서 LiteLLM 자체 Anthr
 `tool_result` 안의 이미지를 직후 user 메시지로 재배치해 vision 백엔드에서
 이미지가 유실되던 문제(gateway issue #140)도 함께 해결합니다.
 
-프로덕션 `Dockerfile`과 `Dockerfile.dev` 모두 sanitizer를 LiteLLM 앞(:3996)에 함께 띄웁니다
-(`entrypoint.sh`). 모델별 reasoning-effort 어휘 학습·게시(`effort_levels`)·clamp는 이
-프로세스의 일이므로, gateway가 :3999를 직접 보면 ChatDRAGON까지 레벨이 올라가지 않습니다.
+프로덕션 `Dockerfile`과 `Dockerfile.dev` 모두 sanitizer를 LiteLLM 앞(:3996)에 **브리지를 켠 채**
+(`SANITIZER_USE_OPENAI_BRIDGE=true`) 함께 띄웁니다(`entrypoint.sh`). 모델별 reasoning-effort 어휘
+학습·게시(`effort_levels`)·clamp는 이 프로세스의 일이고, 게시되는 레벨은 `/v1/chat/completions`의
+`reasoning_effort`로 배운 것이므로 `/v1/messages`의 `output_config.effort`를 같은 필드·같은 경로에
+싣는 브리지가 켜져 있어야 그 레벨이 실제 요청 경로를 설명합니다. 브리지가 꺼지면 `/v1/messages`는
+LiteLLM 자체 Anthropic 어댑터로 그대로 중계되어 변환도 clamp도 타지 않습니다. gateway가 :3999를
+직접 보면 ChatDRAGON까지 레벨이 올라가지 않습니다. 이 짝은 `sanitizer/tests/test_production_topology.py`가
+고정합니다.
 
 자세한 내용과 실행/테스트 방법은 [`sanitizer/README.md`](sanitizer/README.md) 참조.
 
