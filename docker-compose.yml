@@ -10,3 +10,17 @@ services:
       - no_proxy=localhost,127.0.0.1
       - OPENAI_API_BASE=http://localhost:8088/v1
       - THINK_OUTPUT_MODE=none
+      # The image runs LiteLLM on :3999 and the sanitizer in front on :3996.
+      # Clients (oh-my-gateway ANTHROPIC_BASE_URL) should use :3996 — that is
+      # where each model's learned effort levels ride GET /v1/models as
+      # ``effort_levels`` and where an unsupported level is clamped instead of
+      # reaching vLLM as a 400. The probe authenticates with LITELLM_MASTER_KEY.
+      - LITELLM_PORT=3999
+      - SANITIZER_PORT=3996
+      - UPSTREAM_BASE_URL=http://localhost:3999
+      # The bridge must be on for the published effort_levels to describe the
+      # path /v1/messages clients actually take: it carries output_config.effort
+      # onto the same /v1/chat/completions reasoning_effort field the levels were
+      # learned on (clamped to that set). Off = raw relay to LiteLLM's Anthropic
+      # adapter, where neither the translation nor the clamp applies.
+      - SANITIZER_USE_OPENAI_BRIDGE=true
