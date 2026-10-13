@@ -134,6 +134,7 @@ model_list:
 ```
 ├── litellm_config.yaml    # 모델 및 LiteLLM 설정
 ├── strip_thinking.py      # thinking 출력 제어 (THINK_OUTPUT_MODE)
+├── prompt_capture.py      # 모델이 실제로 받는 요청 기록 (PROMPT_CAPTURE, 기본 꺼짐)
 ├── sanitizer/             # Anthropic-facing 리버스 프록시 (LiteLLM 어댑터 버그 우회)
 ├── Dockerfile
 ├── docker-compose.yml
@@ -166,6 +167,47 @@ LiteLLM 자체 Anthropic 어댑터로 그대로 중계되어 변환도 clamp도 
 고정합니다.
 
 자세한 내용과 실행/테스트 방법은 [`sanitizer/README.md`](sanitizer/README.md) 참조.
+
+## 모델이 실제로 받는 요청 기록
+
+ChatDRAGON·oh-my-gateway 화면에는 SDK 이벤트만 보이고, 그 아래에서 모델이 실제로 읽는 것은 보이지 않습니다.
+예를 들어 Claude Code 시스템 프롬프트, MCP를 포함한 모든 도구 스키마, 매 턴 다시 보내는 전체 대화 기록,
+그리고 LiteLLM이 덧붙이거나 바꾼 것(`max_tokens`, `stream_options`, 서빙 모델 이름, 지워진 thinking 블록)이
+그렇습니다. 이 모두가 한 번에 있는 곳은 LiteLLM이 백엔드(vLLM/SGLang)로 보내기 직전의 요청 본문
+(`complete_input_dict`)뿐이고, 이 값은 백엔드가 받는 JSON과 바이트 단위로 같습니다.
+`prompt_capture.py`가 그 지점에서 요청을 기록합니다.
+
+**기본 꺼짐.** 켜면 사용자 대화, 도구 결과, Agent가 읽은 모든 내용이 디스크에 남습니다.
+사용자 데이터베이스처럼 다루고, 볼륨·접근 권한·보존 기간을 정한 뒤 켜세요.
+인증 헤더와 API 키는 기록하지 않습니다(헤더는 허용 목록만 남깁니다).
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `PROMPT_CAPTURE` | `false` | `true`면 기록 |
+| `PROMPT_CAPTURE_DIR` | `/app/prompt_captures` | 저장 위치(compose는 `./prompt_captures`에 마운트) |
+| `PROMPT_CAPTURE_RETENTION_DAYS` | `7` | 보존 일수(UTC 날짜 기준, 지난 날 파일은 삭제) |
+| `PROMPT_CAPTURE_MAX_MB` | `2048` | 전체 용량 상한. 넘으면 오래된 날부터 지움(`0` = 상한 없음) |
+
+- **저장 형식:** 날짜별 `YYYY-MM-DD.jsonl`에 백엔드 호출 한 건이 한 줄입니다.
+  Claude Code는 같은 시스템 프롬프트·도구 목록·대화 기록을 매 턴 다시 보내므로, `messages[i]`와 `tools`는
+  `blobs/`에 내용 해시로 **한 번만** 저장하고 줄에는 참조만 둡니다.
+- **요청 경로를 막지 않습니다:** 훅은 본문을 직렬화해 큐에 넣기만 하고, 디스크 쓰기는 별도 스레드가 합니다.
+  큐가 차면 그 기록을 버리고 로그를 남길 뿐, 모델 호출을 늦추거나 실패시키지 않습니다.
+- **세션과 연결:** Claude CLI가 보내는 `x-claude-code-session-id`·`agent-type`·`agent-id`를 함께 기록합니다.
+  그래서 한 ChatDRAGON 대화, 또는 그 안의 subagent 호출만 골라 볼 수 있습니다.
+
+보기(컨테이너 안에서):
+
+```bash
+python /app/prompt_capture.py list                       # 최근 50건
+python /app/prompt_capture.py list --session <세션 id>    # 한 Claude 세션의 호출만
+python /app/prompt_capture.py show <call_id>             # 시스템 프롬프트·도구·메시지를 읽기 좋게
+python /app/prompt_capture.py show <call_id> --tools-full  # 도구 스키마 전체
+python /app/prompt_capture.py show <call_id> --raw       # 백엔드가 받은 JSON 그대로
+```
+
+여기에 남는 것은 chat template을 적용하기 **전** JSON입니다. 토큰으로 렌더된 최종 프롬프트(도구가 시스템
+프롬프트 안에 펼쳐진 모습)까지 보려면 vLLM 쪽 요청 로그나 `/tokenize`를 써야 합니다.
 
 ## Claude Code 모델 디스커버리
 

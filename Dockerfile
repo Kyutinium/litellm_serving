@@ -19,11 +19,14 @@ FROM ghcr.io/berriai/litellm:main-stable
 # ``sanitizer/tests/test_production_topology.py`` pins this pairing.
 COPY litellm_config.yaml /app/config.yaml
 COPY strip_thinking.py /app/strip_thinking.py
+COPY prompt_capture.py /app/prompt_capture.py
 COPY sanitizer /app/sanitizer
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-ENV LITELLM_WORKER_STARTUP_HOOKS=strip_thinking:apply_patch
+# prompt_capture:install is a no-op unless PROMPT_CAPTURE=true — it records the exact
+# body LiteLLM sends to the backend (see README "모델이 실제로 받는 요청 기록").
+ENV LITELLM_WORKER_STARTUP_HOOKS=strip_thinking:apply_patch,prompt_capture:install
 ENV PYTHONPATH=/app
 ENV THINK_OUTPUT_MODE=none
 ENV LITELLM_PORT=3999
