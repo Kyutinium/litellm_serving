@@ -107,24 +107,12 @@ class StoreTests(unittest.TestCase):
         new = pc.build_record(kwargs_for([SYSTEM], "new"), now=time.time())
         self.store.write(old)
         self.store.write(new)
-        past = time.time() - 2 * pc._BLOB_GRACE_SECONDS
-        for base, _d, files in os.walk(self.store.blob_root):
-            for f in files:
-                os.utime(os.path.join(base, f), (past, past))
         with mock.patch.dict(os.environ, {"PROMPT_CAPTURE_RETENTION_DAYS": "7"}):
             self.store.prune()
         self.assertEqual(self.store.days(), [new["ts"][:10]])
         [kept] = list(self.store.iter_records(new["ts"][:10]))
         self.store.expand(kept["body"])  # every piece the kept line needs survived
         self.assertEqual(len(self.blob_files()), 2)  # system + tools; "old only" went
-
-    def test_prune_keeps_fresh_unreferenced_blobs(self):
-        # another worker process wrote the blob, its line is not on disk yet
-        path = self.store.blob_path("ab" * 32)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        open(path, "w").write("{}")
-        self.store.prune()
-        self.assertTrue(os.path.exists(path))
 
     def test_size_ceiling_drops_oldest_days_first(self):
         for i, day in enumerate(["2026-10-01", "2026-10-02", "2026-10-03"]):
@@ -133,6 +121,31 @@ class StoreTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PROMPT_CAPTURE_RETENTION_DAYS": "365", "PROMPT_CAPTURE_MAX_MB": "1"}):
             self.store.prune(today="2026-10-03")
         self.assertEqual(self.store.days(), ["2026-10-02", "2026-10-03"])
+
+    def test_one_day_over_the_ceiling_is_trimmed_to_its_newest_captures(self):
+        # review P1/P2: a single (today's) day used to be exempt from the ceiling
+        for i in range(8):
+            self.store.write(pc.build_record(kwargs_for([SYSTEM, {"role": "user", "content": f"{i}:" + "y" * 300_000}], f"t{i}")))
+        with mock.patch.dict(os.environ, {"PROMPT_CAPTURE_MAX_MB": "1"}):
+            left = self.store.prune()
+        self.assertLessEqual(left, 1024 * 1024)
+        self.assertEqual(left, self.store._disk_bytes())
+        ids = [r["call_id"] for d in self.store.days() for r in self.store.iter_records(d)]
+        self.assertTrue(ids and ids == [f"t{i}" for i in range(8 - len(ids), 8)], ids)  # newest kept, in order
+        for d in self.store.days():
+            for r in self.store.iter_records(d):
+                self.store.expand(r["body"])
+
+    def test_writes_never_take_the_store_past_the_ceiling(self):
+        with mock.patch.dict(os.environ, {"PROMPT_CAPTURE_MAX_MB": "1"}):
+            for i in range(40):
+                self.store.write(pc.build_record(kwargs_for([{"role": "user", "content": f"{i}:" + "z" * 90_000}], f"w{i}")))
+                self.assertLessEqual(self.store._disk_bytes(), 1024 * 1024, f"after write {i}")
+            # a single capture bigger than the ceiling is skipped, not written
+            self.assertFalse(self.store.write(pc.build_record(kwargs_for([{"role": "user", "content": "q" * 2_000_000}], "huge"))))
+        ids = [r["call_id"] for d in self.store.days() for r in self.store.iter_records(d)]
+        self.assertIn("w39", ids)
+        self.assertNotIn("huge", ids)
 
 
 class WriterTests(unittest.TestCase):
@@ -157,6 +170,80 @@ class WriterTests(unittest.TestCase):
             ids = [r["call_id"] for d in writer.store.days() for r in writer.store.iter_records(d)]
             self.assertEqual(ids, ["w1"])
 
+
+
+def _mp_write_same(root, n, worker):
+    store = pc.Store(root)
+    for i in range(n):
+        history = [SYSTEM, {"role": "user", "content": "shared question"}, {"role": "assistant", "content": f"w{worker}-{i}"}]
+        store.write(pc.build_record(kwargs_for(history, f"w{worker}-{i}")))
+
+
+def _mp_write_big(root, n, worker):
+    store = pc.Store(root)
+    for i in range(n):
+        # a large unique piece makes each line + blob a multi-megabyte write
+        store.write(pc.build_record(kwargs_for([{"role": "user", "content": f"{worker}-{i}-" + "B" * 3_000_000}], f"b{worker}-{i}")))
+
+
+def _mp_first_publish(root, rounds, worker, barrier):
+    store = pc.Store(root)
+    for r in range(rounds):
+        # every process publishes the same never-seen-before multi-megabyte piece at once
+        shared = {"role": "system", "content": f"round {r} " + "S" * 4_000_000}
+        barrier.wait(timeout=30)
+        store.write(pc.build_record(kwargs_for([shared, {"role": "user", "content": f"{worker}-{r}"}], f"p{worker}-{r}")))
+
+
+class MultiProcessTests(unittest.TestCase):
+    """review P1: several LiteLLM workers share one capture directory."""
+
+    def _run(self, target, workers, n, barrier=False):
+        import multiprocessing as mp
+
+        ctx = mp.get_context("fork")
+        with tempfile.TemporaryDirectory() as root:
+            extra = (ctx.Barrier(workers),) if barrier else ()
+            procs = [ctx.Process(target=target, args=(root, n, w) + extra) for w in range(workers)]
+            for p in procs:
+                p.start()
+            for p in procs:
+                p.join(60)
+            self.assertEqual([p.exitcode for p in procs], [0] * workers, "a worker raised")
+            store = pc.Store(root)
+            records = [r for d in store.days() for r in store.iter_records(d)]
+            self.assertEqual(len(records), workers * n)
+            for r in records:
+                store.expand(r["body"])  # every reference resolves to whole JSON
+            stray = [f for _b, _d, fs in os.walk(root) for f in fs if f.endswith(".tmp")]
+            self.assertEqual(stray, [])
+            blobs = [f for _b, _d, fs in os.walk(store.blob_root) for f in fs]
+            return records, blobs
+
+    def test_same_content_from_many_processes(self):
+        records, blobs = self._run(_mp_write_same, workers=6, n=25)
+        # system + "shared question" + tools are shared; one assistant message per capture
+        self.assertEqual(len(blobs), 3 + len(records))
+
+    def test_simultaneous_first_publish_of_the_same_blob(self):
+        records, blobs = self._run(_mp_first_publish, workers=6, n=6, barrier=True)
+        # per round: the shared system piece + tools are one blob each; one user message per capture
+        self.assertEqual(len(blobs), 6 + 1 + len(records))
+
+    def test_large_lines_from_many_processes_do_not_interleave(self):
+        self._run(_mp_write_big, workers=4, n=4)
+
+
+class WriterDrainTests(unittest.TestCase):
+    def test_close_writes_what_is_queued(self):
+        with tempfile.TemporaryDirectory() as root:
+            writer = pc.Writer(root)
+            for i in range(30):
+                writer.submit(pc.build_record(kwargs_for([{"role": "user", "content": f"m{i}"}], f"d{i}")))
+            writer.close()
+            ids = [r["call_id"] for d in writer.store.days() for r in writer.store.iter_records(d)]
+            self.assertEqual(ids, [f"d{i}" for i in range(30)])
+            self.assertFalse(writer._thread.is_alive())
 
 class InstallTests(unittest.TestCase):
     def test_off_by_default_never_imports_litellm(self):
