@@ -24,3 +24,14 @@ services:
       # learned on (clamped to that set). Off = raw relay to LiteLLM's Anthropic
       # adapter, where neither the translation nor the clamp applies.
       - SANITIZER_USE_OPENAI_BRIDGE=true
+      # 모델이 실제로 받는 요청 기록 — 기본 꺼짐. 켜면 사용자 대화·도구 결과가 디스크에
+      # 남으므로 볼륨·권한·보존 기간을 정하고 켠다(README "모델이 실제로 받는 요청 기록").
+      - PROMPT_CAPTURE=false
+      - PROMPT_CAPTURE_DIR=/app/prompt_captures
+      - PROMPT_CAPTURE_RETENTION_DAYS=7
+      # 매 턴 시스템 프롬프트·도구·대화 기록 전체가 다시 실리므로 넉넉히 둔다(중복은 한 번만 저장).
+      # 볼륨에 이만큼의 여유가 실제로 있어야 한다 — 상한은 이 디렉터리만 지킨다.
+      - PROMPT_CAPTURE_MAX_MB=102400
+    volumes:
+      # PROMPT_CAPTURE=true일 때 기록이 컨테이너 재생성에도 남게 한다
+      - ./prompt_captures:/app/prompt_captures
