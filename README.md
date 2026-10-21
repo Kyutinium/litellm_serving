@@ -136,6 +136,7 @@ model_list:
 ├── strip_thinking.py      # thinking 출력 제어 (THINK_OUTPUT_MODE)
 ├── prompt_capture.py      # 모델이 실제로 받는 요청 기록 (PROMPT_CAPTURE, 기본 꺼짐)
 ├── sanitizer/             # Anthropic-facing 리버스 프록시 (LiteLLM 어댑터 버그 우회)
+├── balancer/              # 같은 모델의 vLLM 여러 대를 실제 부하 기준으로 분배 (BALANCER_POOLS)
 ├── Dockerfile
 ├── docker-compose.yml
 ├── Dockerfile.dev         # sanitizer + LiteLLM 동시 기동
@@ -167,6 +168,75 @@ LiteLLM 자체 Anthropic 어댑터로 그대로 중계되어 변환도 clamp도 
 고정합니다.
 
 자세한 내용과 실행/테스트 방법은 [`sanitizer/README.md`](sanitizer/README.md) 참조.
+
+## vLLM 여러 대에 부하 기준으로 나누기 (balancer)
+
+같은 모델을 vLLM 여러 대로 띄웠을 때 LiteLLM `routing_strategy: least-busy`는 동시에 들어온 요청을
+**한 대에 몰아 줍니다**(issue #31). LiteLLM 1.106 코드 기준으로 네 가지 이유가 있습니다.
+- 처리 중 요청 수가 같으면 늘 목록의 첫 번째가 뽑힙니다.
+- 서버를 고른 **뒤에야** 처리 중 숫자를 올려서, 동시에 들어온 요청이 같은 숫자(0)를 봅니다.
+- Redis가 없으면 그 숫자가 워커마다 따로 있습니다.
+- 긴 컨텍스트 요청과 짧은 요청을 똑같이 1로 셉니다.
+
+`balancer/`는 LiteLLM과 vLLM 사이에서 이렇게 고릅니다.
+- 각 vLLM의 `/metrics`(`vllm:num_requests_waiting`, `vllm:num_requests_running`, KV 캐시 사용률
+  `vllm:kv_cache_usage_perc` 또는 예전 이름 `vllm:gpu_cache_usage_perc`)를 주기적으로 읽어 점수를 매깁니다.
+- 고르는 **순간** 그 서버의 숫자를 올리고, 응답이 끝나거나 끊기면 내립니다.
+- 점수가 같으면 무작위로 고릅니다.
+- 연결이 안 되는 서버(거부되거나 연결 제한 시간 안에 답이 없는 서버)는 잠시 빼고 다음 서버로 보냅니다.
+
+LiteLLM은 그 모델의 주소 하나(balancer)만 봅니다.
+
+**켜는 법**
+1. compose에 `BALANCER_POOLS`를 넣습니다(풀 이름 → vLLM 주소 목록). 값이 있을 때만 balancer가
+   `127.0.0.1:${BALANCER_PORT}`(기본 3997)에 뜨고, 잘못된 값이면 시작하지 않습니다.
+   ```yaml
+   - 'BALANCER_POOLS={"glm-5.1-fp8":["http://10.0.0.1:8089","http://10.0.0.2:8089"]}'
+   ```
+2. `litellm_config.yaml`에서 그 모델의 `api_base`를 balancer로 바꿉니다.
+   ```yaml
+   - model_name: glm-5.1-fp8
+     litellm_params:
+       model: hosted_vllm/glm-5.1-fp8
+       api_base: http://localhost:3997/glm-5.1-fp8/v1
+       api_key: EMPTY
+   ```
+   이 모델에 LiteLLM `routing_strategy`는 필요 없습니다(LiteLLM이 보는 deployment가 하나).
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `BALANCER_POOLS` | *(비어 있음 = 끔)* | `{"풀 이름": ["http://host:port", …]}`. 주소 끝의 `/v1`은 떼고 씁니다 |
+| `BALANCER_PORT` | `3997` | balancer 포트(컨테이너 안 루프백) |
+| `BALANCER_SCRAPE_INTERVAL` | `1.0` | `/metrics`를 읽는 주기(초) |
+| `BALANCER_SCRAPE_TIMEOUT` | `0.8` | `/metrics` 한 번의 제한 시간(초). 넘으면 그 서버는 우리 쪽 처리 중 수로만 셉니다 |
+| `BALANCER_WEIGHT_WAITING` / `_RUNNING` / `_KV` | `4` / `1` / `8` | 점수 = 대기×4 + (처리 중 + 마지막 확인 뒤 보낸 수)×1 + KV 사용률(0~1)×8 |
+| `BALANCER_DOWN_SECONDS` | `10` | 연결이 안 된 서버를 빼 두는 시간(초). 모두 빠지면 가장 최근에 정상이던 서버로 보냅니다 |
+| `BALANCER_CONNECT_TIMEOUT` | `3` | 연결 단계 제한 시간(초). 방화벽 DROP이나 죽은 IP처럼 답이 없는 서버를 이 시간 안에 포기하고 다음 서버로 보냅니다 |
+| `BALANCER_REQUEST_TIMEOUT` | `600` | 연결된 뒤 응답을 기다리는 제한 시간(초). 추론은 몇 분 걸릴 수 있습니다 |
+| `BALANCER_MAX_BODY_MB` | `64` | 요청 본문 상한(MiB). 넘으면 서버를 고르기 전에 413입니다 |
+| `BALANCER_MAX_CONNECTIONS` / `BALANCER_MAX_KEEPALIVE` | `1024` / `128` | 공유 업스트림 클라이언트의 연결 상한과 재사용할 유휴 연결 수 |
+
+`GET http://localhost:3997/balancer/status`로 서버별 점수 재료(대기·처리 중·KV), 우리가 보낸 처리 중 수,
+뺀 상태, 고른 횟수를 볼 수 있습니다.
+
+연결 단계에서 실패한 요청(거부 `ConnectError`, 제한 시간 초과 `ConnectTimeout`)만 다음 서버로 다시 보냅니다.
+아직 아무것도 보내지 않았으므로 안전합니다. 연결이 된 뒤의 5xx나 응답 대기 타임아웃(`ReadTimeout`)은 그 서버에서
+이미 실행 중일 수 있으므로 다시 보내지 않고 그대로 돌려줍니다. 재시도·fallback은 LiteLLM이 합니다. 테스트는
+`python -m pytest balancer/tests -q`입니다.
+
+**메모리·연결.** 연결이 거부되면 같은 본문을 다음 서버로 다시 보내야 하므로, 본문은 메모리에 통째로 들고
+있습니다(`BALANCER_MAX_BODY_MB`까지). 처리 중인 큰 요청 하나는 대략 **본문 크기의 2배**를 차지하고(우리가 든
+사본 + httpx 요청 객체) 응답이 끝나면 놓습니다. 업스트림 연결은 프로세스 하나가 공유하는 클라이언트에서 재사용됩니다.
+
+로컬 측정(가짜 vLLM 2대, 2026-10-21):
+- 15 MiB 본문 20건을 동시에 보내고 각각 10초씩 스트리밍: 전부 성공했고 RSS는 54 MB → 최대 597 MB → 끝나고 200 MB, FD는 최대 56개였습니다.
+- 작은 요청 200건을 동시에 2초씩 스트리밍: 전부 성공했고 p50 2.45 s, FD는 최대 416개였다가 끝나고 18개로 돌아왔습니다.
+- 요청 420건에 업스트림 연결은 202개만 열렸습니다. 동시 200건만큼은 새로 열고, 그다음 순차 요청 200건은 그 연결을 재사용했습니다.
+- 끝난 뒤 서버별 처리 중 수는 0이었습니다.
+
+큰 이미지 요청을 많이 동시에 받는 배포라면 `BALANCER_MAX_BODY_MB`와 컨테이너 메모리를 함께 정해 두세요.
+
+---
 
 ## 모델이 실제로 받는 요청 기록
 

@@ -29,6 +29,10 @@ services:
       - LOG_LEVEL=INFO
       # 모델이 실제로 받는 요청 기록 — 기본 꺼짐. 켜면 사용자 대화·도구 결과가 디스크에
       # 남으므로 볼륨·권한·보존 기간을 정하고 켠다(README "모델이 실제로 받는 요청 기록").
+      # 같은 모델의 vLLM 여러 대를 실제 부하 기준으로 나눈다(README "vLLM 여러 대에 부하 기준으로
+      # 나누기", issue #31). 켜려면 주석을 풀고 litellm_config.yaml의 그 모델 api_base를
+      # http://localhost:3997/<pool>/v1 로 바꾼다. 비우면 balancer는 뜨지 않는다.
+      # - 'BALANCER_POOLS={"glm-5.1-fp8":["http://10.0.0.1:8089","http://10.0.0.2:8089"]}'
       - PROMPT_CAPTURE=false
       - PROMPT_CAPTURE_DIR=/app/prompt_captures
       - PROMPT_CAPTURE_RETENTION_DAYS=7
@@ -36,6 +40,7 @@ services:
     volumes:
       # Bind-mount sanitizer + config for fast iteration (no rebuild on edit).
       - ./sanitizer:/app/sanitizer:ro
+      - ./balancer:/app/balancer:ro
       - ./litellm_config.yaml:/app/config.yaml:ro
       - ./strip_thinking.py:/app/strip_thinking.py:ro
       - ./prompt_capture.py:/app/prompt_capture.py:ro

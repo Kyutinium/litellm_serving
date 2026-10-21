@@ -21,6 +21,7 @@ COPY litellm_config.yaml /app/config.yaml
 COPY strip_thinking.py /app/strip_thinking.py
 COPY prompt_capture.py /app/prompt_capture.py
 COPY sanitizer /app/sanitizer
+COPY balancer /app/balancer
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
@@ -31,6 +32,8 @@ ENV PYTHONPATH=/app
 ENV THINK_OUTPUT_MODE=none
 ENV LITELLM_PORT=3999
 ENV SANITIZER_PORT=3996
+# Load-aware balancer (issue #31): runs only when BALANCER_POOLS is set — see README.
+ENV BALANCER_PORT=3997
 ENV UPSTREAM_BASE_URL=http://localhost:3999
 ENV SANITIZER_USE_OPENAI_BRIDGE=true
 
