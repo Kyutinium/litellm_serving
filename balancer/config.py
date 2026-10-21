@@ -47,16 +47,39 @@ def get_pools() -> Dict[str, List[str]]:
             raise ConfigError(f"pool {name!r} needs a non-empty list of backend URLs")
         cleaned: List[str] = []
         for url in urls:
-            if not isinstance(url, str) or not re.match(r"^https?://[^\s/]+", url.strip()):
-                raise ConfigError(f"pool {name!r} has an invalid backend URL {url!r}")
-            u = url.strip().rstrip("/")
-            # A trailing /v1 would double up with the client's own /v1 path.
-            if u.endswith("/v1"):
-                u = u[: -len("/v1")]
+            u = _backend_url(name, url)
             if u not in cleaned:
                 cleaned.append(u)
         pools[name] = cleaned
     return pools
+
+
+def _backend_url(pool: str, raw) -> str:
+    """``scheme://host[:port]`` exactly — checked the way httpx will parse it, so a
+    typo is a startup ``ConfigError`` instead of a per-request ``InvalidURL`` (review)."""
+    import httpx  # the sanitizer image ships it; keep config importable without it otherwise
+
+    if not isinstance(raw, str) or not raw.strip():
+        raise ConfigError(f"pool {pool!r} has an invalid backend URL {raw!r}")
+    text = raw.strip().rstrip("/")
+    # A trailing /v1 would double up with the client's own /v1 path.
+    if text.endswith("/v1"):
+        text = text[: -len("/v1")]
+    try:
+        url = httpx.URL(text)
+        port = url.port  # parses (and range-checks) the port
+    except Exception as exc:  # noqa: BLE001 — httpx.InvalidURL and friends
+        raise ConfigError(f"pool {pool!r} has an invalid backend URL {raw!r}: {exc}") from exc
+    if url.scheme not in ("http", "https") or not url.host:
+        raise ConfigError(f"pool {pool!r} backend {raw!r} must be http(s)://host[:port]")
+    if url.userinfo or url.query or url.fragment or url.path not in ("", "/"):
+        raise ConfigError(
+            f"pool {pool!r} backend {raw!r} must be http(s)://host[:port] — no path, query, fragment or credentials"
+        )
+    if port is not None and not 0 < port < 65536:
+        raise ConfigError(f"pool {pool!r} backend {raw!r} has an out-of-range port")
+    host = f"[{url.host}]" if ":" in url.host else url.host
+    return f"{url.scheme}://{host}" + (f":{port}" if port is not None else "")
 
 
 def _float(name: str, default: float, *, minimum: float = 0.0) -> float:
@@ -82,6 +105,9 @@ class Tuning:
     down_seconds: float
     request_timeout: float
     connect_timeout: float
+    max_body_bytes: int
+    max_connections: int
+    max_keepalive: int
 
 
 def get_tuning() -> Tuning:
@@ -98,6 +124,12 @@ def get_tuning() -> Tuning:
         # A replica that never answers the SYN (DROP, blackholed IP) must be given up on
         # in seconds, not after the 600 s an inference read may legitimately take.
         connect_timeout=_float("BALANCER_CONNECT_TIMEOUT", 3.0, minimum=0.1),
+        # The body is held in memory so a refused connect can be resent to the next
+        # replica; this bounds one request's share (413 beyond it).
+        max_body_bytes=int(_float("BALANCER_MAX_BODY_MB", 64.0, minimum=0.001) * 1024 * 1024),
+        # One shared upstream client: keep-alive connections are reused across requests.
+        max_connections=int(_float("BALANCER_MAX_CONNECTIONS", 1024.0, minimum=1.0)),
+        max_keepalive=int(_float("BALANCER_MAX_KEEPALIVE", 128.0, minimum=0.0)),
     )
 
 

@@ -55,15 +55,35 @@ app = FastAPI(title="vLLM load balancer", version="0.1.0")
 
 POOLS: Dict[str, Pool] = {}
 _scraper: Optional[asyncio.Task] = None
+# One upstream client for every relayed request (connection reuse); per-request timeouts.
+_relay_client: Optional[httpx.AsyncClient] = None
 
 
 # Connecting is the only phase that is safe to fail over: nothing has been sent yet.
 _CONNECT_FAILURES = (httpx.ConnectError, httpx.ConnectTimeout)
 
 
-def _make_client(timeout) -> httpx.AsyncClient:
+def _make_client(timeout, limits: Optional[httpx.Limits] = None) -> httpx.AsyncClient:
     """Factory for the relay/scrape client; tests swap in a ``MockTransport``."""
-    return httpx.AsyncClient(timeout=timeout)
+    return httpx.AsyncClient(timeout=timeout, limits=limits or httpx.Limits())
+
+
+def _relay_timeout(tuning) -> httpx.Timeout:
+    # Long reads (an inference may take minutes), short connects (a dead host must not
+    # hold the request for the whole read budget before we try the next replica).
+    return httpx.Timeout(tuning.request_timeout, connect=tuning.connect_timeout)
+
+
+def _get_relay_client() -> httpx.AsyncClient:
+    global _relay_client
+    if _relay_client is None or _relay_client.is_closed:
+        tuning = get_tuning()
+        limits = httpx.Limits(
+            max_connections=tuning.max_connections,
+            max_keepalive_connections=tuning.max_keepalive,
+        )
+        _relay_client = _make_client(_relay_timeout(tuning), limits)
+    return _relay_client
 
 
 def build_pools() -> Dict[str, Pool]:
@@ -83,7 +103,7 @@ async def scrape_once(pools: Dict[str, Pool], client: httpx.AsyncClient) -> None
             pool.mark_down(b, f"metrics: {exc.__class__.__name__}")
             b.metrics_ok = False
             return
-        except httpx.HTTPError:
+        except Exception:  # noqa: BLE001 — HTTPError, InvalidURL, …: never stop the scrape
             # Slow or odd answer: keep the replica, fall back to our own count.
             b.metrics_ok = False
             return
@@ -116,15 +136,20 @@ async def _startup() -> None:
         logger.warning("BALANCER_POOLS is empty — every /<pool>/… request will 404")
     for pool in POOLS.values():
         logger.info("pool %s: %s", pool.name, ", ".join(b.url for b in pool.backends))
+    _get_relay_client()
     _scraper = asyncio.create_task(_scrape_forever())
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
+    global _relay_client
     if _scraper is not None:
         _scraper.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await _scraper
+    if _relay_client is not None:
+        await _relay_client.aclose()
+        _relay_client = None
 
 
 @app.get("/health")
@@ -145,45 +170,73 @@ def _response_headers(res: httpx.Response) -> Dict[str, str]:
     return {k: v for k, v in res.headers.items() if k.lower() not in _DROP_FROM_RESPONSE}
 
 
+def _too_large(limit: int) -> JSONResponse:
+    return JSONResponse(
+        {"error": {"message": f"request body exceeds BALANCER_MAX_BODY_MB ({limit} bytes)", "type": "request_too_large"}},
+        413,
+    )
+
+
+async def _read_body(request: Request, limit: int) -> Optional[bytes]:
+    """The whole body, or ``None`` past *limit* — held so a refused connect can be resent."""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > limit:
+        return None
+    parts = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            return None
+        parts.append(chunk)
+    return b"".join(parts)
+
+
 @app.api_route("/{pool_name}/{path:path}", methods=_METHODS)
 async def relay(pool_name: str, path: str, request: Request):
     pool = POOLS.get(pool_name)
     if pool is None:
         return JSONResponse({"error": {"message": f"unknown pool {pool_name!r}", "type": "not_found"}}, 404)
-    body = await request.body()
+    tuning = get_tuning()
+    body = await _read_body(request, tuning.max_body_bytes)
+    if body is None:
+        return _too_large(tuning.max_body_bytes)
     headers = _request_headers(request)
     query = request.url.query
-    tuning = get_tuning()
-    # Long reads (an inference may take minutes), short connects (a dead host must not
-    # hold the request for the whole read budget before we try the next replica).
-    client = _make_client(httpx.Timeout(tuning.request_timeout, connect=tuning.connect_timeout))
+    client = _get_relay_client()
+    timeout = _relay_timeout(tuning)
     tried: set = set()
     while True:
         backend = pool.acquire(frozenset(tried))
         if backend is None:
-            await client.aclose()
             return JSONResponse(
                 {"error": {"message": f"pool {pool_name!r}: no replica reachable", "type": "service_unavailable"}},
                 503,
             )
         tried.add(backend.url)
-        url = f"{backend.url}/{path}" + (f"?{query}" if query else "")
-        upstream = client.build_request(request.method, url, headers=headers, content=body)
+        # Everything between acquire() and a response owns the reservation: any failure
+        # here gives it back before deciding what to do.
         try:
+            url = f"{backend.url}/{path}" + (f"?{query}" if query else "")
+            upstream = client.build_request(request.method, url, headers=headers, content=body, timeout=timeout)
             res = await client.send(upstream, stream=True)
         except _CONNECT_FAILURES as exc:
             pool.release(backend)
             pool.mark_down(backend, f"connect: {exc.__class__.__name__}")
             continue
+        except httpx.InvalidURL as exc:
+            # Startup validates every backend URL; a request-built one (odd path) that
+            # still fails to parse is this request's problem, not the replica's.
+            pool.release(backend)
+            return JSONResponse({"error": {"message": f"invalid upstream URL: {exc}", "type": "invalid_request"}}, 400)
         except BaseException:
             pool.release(backend)
-            await client.aclose()
             raise
         pool.mark_ok(backend)
-        return _stream_back(pool, backend, client, res)
+        return _stream_back(pool, backend, res)
 
 
-def _stream_back(pool: Pool, backend: Backend, client: httpx.AsyncClient, res: httpx.Response) -> Response:
+def _stream_back(pool: Pool, backend: Backend, res: httpx.Response) -> Response:
     released = False
 
     async def done() -> None:
@@ -192,8 +245,8 @@ def _stream_back(pool: Pool, backend: Backend, client: httpx.AsyncClient, res: h
             return
         released = True
         pool.release(backend)
+        # Closing the response returns its connection to the shared pool.
         await res.aclose()
-        await client.aclose()
 
     async def body():
         try:

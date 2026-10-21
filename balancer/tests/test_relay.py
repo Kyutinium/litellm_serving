@@ -28,9 +28,12 @@ def replicas(monkeypatch):
             self.slow = set()  # connected, then no response → ReadTimeout
             self.seen = []
             self.timeouts = []
+            self.clients = 0
 
         def _handle(self, request: httpx.Request):
             base = f"{request.url.scheme}://{request.url.host}"
+            if request.url.path != "/metrics":
+                self.timeouts.append(request.extensions.get("timeout"))
             if base in self.refuse:
                 raise httpx.ConnectError("refused", request=request)
             if base in self.no_answer:
@@ -42,8 +45,8 @@ def replicas(monkeypatch):
             handler = self.handlers.get(base, lambda r: httpx.Response(200, json={"from": base}))
             return handler(request)
 
-        def factory(self, timeout):
-            self.timeouts.append(timeout)
+        def factory(self, timeout, limits=None):
+            self.clients += 1
             return httpx.AsyncClient(transport=httpx.MockTransport(self._handle))
 
     fake = Fake()
@@ -137,7 +140,21 @@ def test_a_refused_metrics_scrape_marks_the_replica_down(replicas):
 
 @pytest.mark.parametrize(
     "raw",
-    ["not json", "[]", '{"a": []}', '{"a": ["ftp://x"]}', '{"bad name!": ["http://x"]}'],
+    [
+        "not json",
+        "[]",
+        '{"a": []}',
+        '{"a": ["ftp://x"]}',
+        '{"bad name!": ["http://x"]}',
+        # Pass a naive regex, fail httpx at request time (review P2): refuse at startup.
+        '{"a": ["http://replica:wrong-port"]}',
+        '{"a": ["http://replica:70000"]}',
+        '{"a": ["http://replica:8000/extra"]}',
+        '{"a": ["http://replica:8000?x=1"]}',
+        '{"a": ["http://replica:8000#frag"]}',
+        '{"a": ["http://user:pw@replica:8000"]}',
+        '{"a": ["http://"]}',
+    ],
 )
 def test_malformed_pools_refuse(monkeypatch, raw):
     monkeypatch.setenv("BALANCER_POOLS", raw)
@@ -161,7 +178,7 @@ def test_a_client_that_disconnects_mid_stream_releases_its_reservation():
         backend = pool.acquire()
         client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, stream=Slow())))
         res = await client.send(client.build_request("GET", "http://r0/x"), stream=True)
-        streaming = main._stream_back(pool, backend, client, res)
+        streaming = main._stream_back(pool, backend, res)
         body = streaming.body_iterator
         assert await body.__anext__() == b"data: 1\n\n"
         assert backend.in_flight == 1
@@ -198,8 +215,7 @@ def test_connect_is_bounded_short_while_reads_keep_the_long_budget(replicas, mon
     with _client() as c:
         c.get("/glm/v1/models")
     relay_timeout = replicas.timeouts[-1]
-    assert isinstance(relay_timeout, httpx.Timeout)
-    assert relay_timeout.connect == 2.5 and relay_timeout.read == 600
+    assert relay_timeout["connect"] == 2.5 and relay_timeout["read"] == 600
 
 
 def test_a_read_timeout_is_not_retried_on_another_replica(replicas):
@@ -219,7 +235,7 @@ def test_unroutable_replicas_give_up_within_the_connect_timeout(monkeypatch):
     either times out or is refused at once — either way within the connect budget."""
     import time
 
-    monkeypatch.setattr(main, "_make_client", lambda timeout: httpx.AsyncClient(timeout=timeout, trust_env=False))
+    monkeypatch.setattr(main, "_make_client", lambda timeout, limits=None: httpx.AsyncClient(timeout=timeout, trust_env=False))
     monkeypatch.setenv("BALANCER_POOLS", json.dumps({"dead": ["http://192.0.2.1:9", "http://192.0.2.2:9"]}))
     monkeypatch.setenv("BALANCER_SCRAPE_INTERVAL", "3600")
     monkeypatch.setenv("BALANCER_CONNECT_TIMEOUT", "0.3")
@@ -229,3 +245,42 @@ def test_unroutable_replicas_give_up_within_the_connect_timeout(monkeypatch):
         elapsed = time.monotonic() - started
     assert res.status_code == 503
     assert elapsed < 3, f"gave up after {elapsed:.1f}s"
+
+
+def test_backend_urls_are_normalized(monkeypatch):
+    monkeypatch.setenv("BALANCER_POOLS", json.dumps({"a": ["http://R1:8000/v1/", "https://[::1]:9000", "http://r1:8000"]}))
+    assert get_pools() == {"a": ["http://r1:8000", "https://[::1]:9000"]}
+
+
+def test_one_shared_upstream_client_is_reused_across_requests(replicas):
+    with _client() as c:
+        before = replicas.clients
+        for _ in range(5):
+            assert c.get("/glm/v1/models").status_code == 200
+        assert replicas.clients == before, "no client per request — keep-alive connections are reused"
+
+
+def test_a_failure_while_building_the_request_gives_the_reservation_back(replicas, monkeypatch):
+    with _client() as c:
+        relay = main._get_relay_client()
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(relay, "build_request", broken)
+        with pytest.raises(RuntimeError):
+            c.get("/glm/v1/models")
+    assert all(b.in_flight == 0 for b in main.POOLS["glm"].backends)
+
+
+def test_an_oversized_body_is_a_413_before_any_replica_is_picked(replicas, monkeypatch):
+    monkeypatch.setenv("BALANCER_MAX_BODY_MB", "0.01")  # ~10 KiB
+    big = b"x" * 20_000
+    with _client() as c:
+        res = c.post("/glm/v1/chat/completions", content=big, headers={"content-type": "application/json"})
+        # Without a usable Content-Length the streamed size is still bounded.
+        streamed = c.post("/glm/v1/chat/completions", content=iter([big[:8000], big[8000:]]))
+        ok = c.post("/glm/v1/chat/completions", content=b"{}")
+    assert res.status_code == 413 and streamed.status_code == 413
+    assert ok.status_code == 200
+    assert all(b.picked <= 1 for b in main.POOLS["glm"].backends), "the 413s never reached a replica"
