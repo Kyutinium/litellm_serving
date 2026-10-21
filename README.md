@@ -183,7 +183,7 @@ LiteLLM 자체 Anthropic 어댑터로 그대로 중계되어 변환도 clamp도 
   `vllm:kv_cache_usage_perc` 또는 예전 이름 `vllm:gpu_cache_usage_perc`)를 주기적으로 읽어 점수를 매깁니다.
 - 고르는 **순간** 그 서버의 숫자를 올리고, 응답이 끝나거나 끊기면 내립니다.
 - 점수가 같으면 무작위로 고릅니다.
-- 연결이 거부되는 서버는 잠시 빼고 다음 서버로 보냅니다.
+- 연결이 안 되는 서버(거부되거나 연결 제한 시간 안에 답이 없는 서버)는 잠시 빼고 다음 서버로 보냅니다.
 
 LiteLLM은 그 모델의 주소 하나(balancer)만 봅니다.
 
@@ -210,14 +210,16 @@ LiteLLM은 그 모델의 주소 하나(balancer)만 봅니다.
 | `BALANCER_SCRAPE_INTERVAL` | `1.0` | `/metrics`를 읽는 주기(초) |
 | `BALANCER_SCRAPE_TIMEOUT` | `0.8` | `/metrics` 한 번의 제한 시간(초). 넘으면 그 서버는 우리 쪽 처리 중 수로만 셉니다 |
 | `BALANCER_WEIGHT_WAITING` / `_RUNNING` / `_KV` | `4` / `1` / `8` | 점수 = 대기×4 + (처리 중 + 마지막 확인 뒤 보낸 수)×1 + KV 사용률(0~1)×8 |
-| `BALANCER_DOWN_SECONDS` | `10` | 연결이 거부된 서버를 빼 두는 시간(초). 모두 빠지면 가장 최근에 정상이던 서버로 보냅니다 |
-| `BALANCER_REQUEST_TIMEOUT` | `600` | 중계 요청 제한 시간(초) |
+| `BALANCER_DOWN_SECONDS` | `10` | 연결이 안 된 서버를 빼 두는 시간(초). 모두 빠지면 가장 최근에 정상이던 서버로 보냅니다 |
+| `BALANCER_CONNECT_TIMEOUT` | `3` | 연결 단계 제한 시간(초). 방화벽 DROP이나 죽은 IP처럼 답이 없는 서버를 이 시간 안에 포기하고 다음 서버로 보냅니다 |
+| `BALANCER_REQUEST_TIMEOUT` | `600` | 연결된 뒤 응답을 기다리는 제한 시간(초). 추론은 몇 분 걸릴 수 있습니다 |
 
 `GET http://localhost:3997/balancer/status`로 서버별 점수 재료(대기·처리 중·KV), 우리가 보낸 처리 중 수,
 뺀 상태, 고른 횟수를 볼 수 있습니다.
 
-연결 단계에서 거부된 요청만 다음 서버로 다시 보냅니다. 연결이 된 뒤의 5xx나 스트림 중간 타임아웃은
-그 서버의 응답으로 그대로 돌려주고, 재시도·fallback은 LiteLLM이 합니다. 테스트는
+연결 단계에서 실패한 요청(거부 `ConnectError`, 제한 시간 초과 `ConnectTimeout`)만 다음 서버로 다시 보냅니다.
+아직 아무것도 보내지 않았으므로 안전합니다. 연결이 된 뒤의 5xx나 응답 대기 타임아웃(`ReadTimeout`)은 그 서버에서
+이미 실행 중일 수 있으므로 다시 보내지 않고 그대로 돌려줍니다. 재시도·fallback은 LiteLLM이 합니다. 테스트는
 `python -m pytest balancer/tests -q`입니다.
 
 ---

@@ -4,10 +4,12 @@
   headers dropped, like the sanitizer's passthrough).
 * The reservation taken by :meth:`Pool.acquire` is released when the response is done
   — including a client that disconnects mid-stream.
-* A replica that refuses the connection before any byte is relayed is marked down and
-  the request goes to the next one (each replica at most once). Anything after the
-  connection is up (a 5xx, a timeout mid-stream) is the replica's answer and is not
-  retried here — LiteLLM's own retry/fallback sees it.
+* A replica that cannot be connected to — refused (``ConnectError``) or no answer within
+  ``BALANCER_CONNECT_TIMEOUT`` (``ConnectTimeout``: a DROP firewall, a blackholed IP) —
+  is marked down and the request goes to the next one (each replica at most once).
+  Nothing was sent to it, so moving on is safe. Anything after the connection is up (a
+  5xx, a ``ReadTimeout`` mid-request) is the replica's answer and is not retried here:
+  the request may already be running there. LiteLLM's own retry/fallback sees it.
 * ``GET /balancer/status`` shows per-replica scores and counters; ``/health`` is liveness.
 """
 
@@ -55,7 +57,11 @@ POOLS: Dict[str, Pool] = {}
 _scraper: Optional[asyncio.Task] = None
 
 
-def _make_client(timeout: float) -> httpx.AsyncClient:
+# Connecting is the only phase that is safe to fail over: nothing has been sent yet.
+_CONNECT_FAILURES = (httpx.ConnectError, httpx.ConnectTimeout)
+
+
+def _make_client(timeout) -> httpx.AsyncClient:
     """Factory for the relay/scrape client; tests swap in a ``MockTransport``."""
     return httpx.AsyncClient(timeout=timeout)
 
@@ -73,7 +79,7 @@ async def scrape_once(pools: Dict[str, Pool], client: httpx.AsyncClient) -> None
     async def one(pool: Pool, b: Backend) -> None:
         try:
             res = await client.get(f"{b.url}/metrics")
-        except httpx.ConnectError as exc:
+        except _CONNECT_FAILURES as exc:
             pool.mark_down(b, f"metrics: {exc.__class__.__name__}")
             b.metrics_ok = False
             return
@@ -91,7 +97,8 @@ async def scrape_once(pools: Dict[str, Pool], client: httpx.AsyncClient) -> None
 
 async def _scrape_forever() -> None:
     tuning = get_tuning()
-    async with _make_client(tuning.scrape_timeout) as client:
+    timeout = httpx.Timeout(tuning.scrape_timeout, connect=min(tuning.scrape_timeout, tuning.connect_timeout))
+    async with _make_client(timeout) as client:
         while True:
             try:
                 await scrape_once(POOLS, client)
@@ -147,7 +154,9 @@ async def relay(pool_name: str, path: str, request: Request):
     headers = _request_headers(request)
     query = request.url.query
     tuning = get_tuning()
-    client = _make_client(tuning.request_timeout)
+    # Long reads (an inference may take minutes), short connects (a dead host must not
+    # hold the request for the whole read budget before we try the next replica).
+    client = _make_client(httpx.Timeout(tuning.request_timeout, connect=tuning.connect_timeout))
     tried: set = set()
     while True:
         backend = pool.acquire(frozenset(tried))
@@ -162,7 +171,7 @@ async def relay(pool_name: str, path: str, request: Request):
         upstream = client.build_request(request.method, url, headers=headers, content=body)
         try:
             res = await client.send(upstream, stream=True)
-        except httpx.ConnectError as exc:
+        except _CONNECT_FAILURES as exc:
             pool.release(backend)
             pool.mark_down(backend, f"connect: {exc.__class__.__name__}")
             continue

@@ -24,17 +24,26 @@ def replicas(monkeypatch):
         def __init__(self):
             self.handlers = {}
             self.refuse = set()
+            self.no_answer = set()  # SYN never answered → ConnectTimeout
+            self.slow = set()  # connected, then no response → ReadTimeout
             self.seen = []
+            self.timeouts = []
 
         def _handle(self, request: httpx.Request):
             base = f"{request.url.scheme}://{request.url.host}"
             if base in self.refuse:
                 raise httpx.ConnectError("refused", request=request)
+            if base in self.no_answer:
+                raise httpx.ConnectTimeout("no answer", request=request)
+            if base in self.slow and request.url.path != "/metrics":
+                self.seen.append((base, request.method, request.url.path, request.url.query.decode()))
+                raise httpx.ReadTimeout("read timed out", request=request)
             self.seen.append((base, request.method, request.url.path, request.url.query.decode()))
             handler = self.handlers.get(base, lambda r: httpx.Response(200, json={"from": base}))
             return handler(request)
 
         def factory(self, timeout):
+            self.timeouts.append(timeout)
             return httpx.AsyncClient(transport=httpx.MockTransport(self._handle))
 
     fake = Fake()
@@ -160,3 +169,63 @@ def test_a_client_that_disconnects_mid_stream_releases_its_reservation():
         return backend.in_flight
 
     assert asyncio.run(run()) == 0
+
+
+def test_a_replica_that_never_answers_the_connect_fails_over_and_is_marked_down(replicas):
+    """A DROP firewall or blackholed IP ends in ConnectTimeout, not ConnectError — it must
+    fail over like a refusal (review P1), not fail the request after the read budget."""
+    replicas.no_answer.add("http://r0")
+    with _client() as c:
+        for _ in range(4):
+            res = c.get("/glm/v1/models")
+            assert res.status_code == 200 and res.json() == {"from": "http://r1"}
+    r0, r1 = main.POOLS["glm"].backends
+    assert r0.failures >= 1 and r0.down_until > 0
+    assert r0.in_flight == 0 and r1.in_flight == 0
+
+
+def test_every_replica_timing_out_on_connect_is_a_503(replicas):
+    replicas.no_answer.update({"http://r0", "http://r1"})
+    with _client() as c:
+        res = c.get("/glm/v1/models")
+    assert res.status_code == 503
+    assert all(b.in_flight == 0 for b in main.POOLS["glm"].backends)
+
+
+def test_connect_is_bounded_short_while_reads_keep_the_long_budget(replicas, monkeypatch):
+    monkeypatch.setenv("BALANCER_CONNECT_TIMEOUT", "2.5")
+    monkeypatch.setenv("BALANCER_REQUEST_TIMEOUT", "600")
+    with _client() as c:
+        c.get("/glm/v1/models")
+    relay_timeout = replicas.timeouts[-1]
+    assert isinstance(relay_timeout, httpx.Timeout)
+    assert relay_timeout.connect == 2.5 and relay_timeout.read == 600
+
+
+def test_a_read_timeout_is_not_retried_on_another_replica(replicas):
+    """Once connected the request may already be running there — resending it would run
+    it twice. The replica stays in the pool; LiteLLM's retry decides."""
+    replicas.slow.update({"http://r0", "http://r1"})
+    with _client() as c:
+        with pytest.raises(httpx.ReadTimeout):
+            c.get("/glm/v1/models")
+    hits = [s for s in replicas.seen if s[2] != "/metrics"]
+    assert len(hits) == 1, "sent to exactly one replica"
+    assert all(b.failures == 0 and b.in_flight == 0 for b in main.POOLS["glm"].backends)
+
+
+def test_unroutable_replicas_give_up_within_the_connect_timeout(monkeypatch):
+    """Real sockets: TEST-NET-1 addresses (RFC 5737) are never routed, so the connect
+    either times out or is refused at once — either way within the connect budget."""
+    import time
+
+    monkeypatch.setattr(main, "_make_client", lambda timeout: httpx.AsyncClient(timeout=timeout, trust_env=False))
+    monkeypatch.setenv("BALANCER_POOLS", json.dumps({"dead": ["http://192.0.2.1:9", "http://192.0.2.2:9"]}))
+    monkeypatch.setenv("BALANCER_SCRAPE_INTERVAL", "3600")
+    monkeypatch.setenv("BALANCER_CONNECT_TIMEOUT", "0.3")
+    with _client() as c:
+        started = time.monotonic()
+        res = c.get("/dead/v1/models")
+        elapsed = time.monotonic() - started
+    assert res.status_code == 503
+    assert elapsed < 3, f"gave up after {elapsed:.1f}s"

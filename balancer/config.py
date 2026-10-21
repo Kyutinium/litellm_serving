@@ -81,6 +81,7 @@ class Tuning:
     weight_kv: float
     down_seconds: float
     request_timeout: float
+    connect_timeout: float
 
 
 def get_tuning() -> Tuning:
@@ -94,6 +95,9 @@ def get_tuning() -> Tuning:
         weight_kv=_float("BALANCER_WEIGHT_KV", 8.0),
         down_seconds=_float("BALANCER_DOWN_SECONDS", 10.0, minimum=0.5),
         request_timeout=_float("BALANCER_REQUEST_TIMEOUT", 600.0, minimum=1.0),
+        # A replica that never answers the SYN (DROP, blackholed IP) must be given up on
+        # in seconds, not after the 600 s an inference read may legitimately take.
+        connect_timeout=_float("BALANCER_CONNECT_TIMEOUT", 3.0, minimum=0.1),
     )
 
 
