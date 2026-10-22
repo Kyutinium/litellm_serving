@@ -30,7 +30,9 @@ Implements the specification in issue #15.
    Claude Code CLI drops a later `tool_use`/`tool_result` pair whose id already
    appears in the history (the model never sees its repeated call and loops on
    it), and ChatDRAGON folds the running call into the first, finished card.
-   Both modes, streaming and not, replace a repeated or missing id with one the
+   Both modes, streaming and not, replace a repeated or missing client
+   `tool_use` id (never a `server_tool_use`, whose result block in the same
+   response refers to it by id) with one the
    request's history does not use — the next global index in the Kimi format
    (`functions.<name>:<n>`) when the upstream id has that shape, else
    `toolu_<hex>` — and log `replaced N repeated or missing tool_use id(s)`

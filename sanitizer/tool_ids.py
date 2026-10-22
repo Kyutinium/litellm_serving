@@ -13,7 +13,8 @@ conversation, and the clients behind this proxy rely on that:
   overwrites the old one.
 
 The request carries the whole history, so the sanitizer knows every id already
-in use. :class:`ToolIdAllocator` passes an upstream id through when it is new
+in use. :class:`ToolIdAllocator` passes an upstream client ``tool_use`` id
+through when it is new
 and replaces it when it repeats (or is missing) — with the next index in the
 Kimi format when the upstream id has that shape, so the model keeps seeing ids
 it would have produced, else with a ``toolu_`` id. The client stores the
@@ -28,7 +29,13 @@ import uuid
 from typing import Dict, Iterable, Optional, Set
 
 _KIMI_ID = re.compile(r"^functions\.(?P<name>.+):(?P<index>\d+)$")
+# Every id a block may use, for the "already taken" set.
 _TOOL_USE_TYPES = ("tool_use", "server_tool_use")
+# Only client tool calls are ever rewritten. A ``server_tool_use`` is answered
+# inside the same response by a result block (``web_search_tool_result``, …)
+# that names it by ``tool_use_id``; rewriting the call alone would cut that
+# link, and the CLI loop this fixes is about client calls anyway.
+REWRITTEN_TYPE = "tool_use"
 
 
 def history_tool_ids(body: Dict) -> Set[str]:
@@ -101,7 +108,7 @@ def dedupe_body_tool_ids(body: Dict, allocator: ToolIdAllocator) -> Dict:
     changed = False
     out = []
     for block in content:
-        if isinstance(block, dict) and block.get("type") in _TOOL_USE_TYPES:
+        if isinstance(block, dict) and block.get("type") == REWRITTEN_TYPE:
             new_id = allocator.assign(block.get("id"), block.get("name"))
             if new_id != block.get("id"):
                 block = {**block, "id": new_id}

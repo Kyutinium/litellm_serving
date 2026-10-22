@@ -11,8 +11,10 @@ guaranteed to conform to the Anthropic Messages streaming spec:
 * ``index`` values are monotonically increasing from 0;
 * every ``content_block_start`` is paired with a ``content_block_stop`` before
   the next start / ``message_delta`` / ``message_stop``;
-* with a :class:`~sanitizer.tool_ids.ToolIdAllocator`, every ``tool_use`` id is
-  unique against the request's history (Kimi repeats ``functions.<name>:0``).
+* with a :class:`~sanitizer.tool_ids.ToolIdAllocator`, every client ``tool_use``
+  id is unique against the request's history (Kimi repeats
+  ``functions.<name>:0``); ``server_tool_use`` ids are never rewritten, since a
+  result block in the same response refers to them.
 
 This works around LiteLLM's ``AnthropicStreamWrapper`` which leaks
 ``thinking_delta`` events into open ``text`` blocks, drops ``content_block_stop``
@@ -24,7 +26,7 @@ from __future__ import annotations
 
 from typing import AsyncIterator, Dict, Optional
 
-from .tool_ids import ToolIdAllocator
+from .tool_ids import REWRITTEN_TYPE, ToolIdAllocator
 
 # Which block types a given delta type is allowed to live in.
 DELTA_COMPATIBLE_BLOCKS = {
@@ -136,7 +138,7 @@ async def sanitize_events(
         open_index = next_index
         next_index += 1
         block = _normalize_content_block(block_type, content_block)
-        if tool_ids is not None and block_type in ("tool_use", "server_tool_use"):
+        if tool_ids is not None and block_type == REWRITTEN_TYPE:
             new_id = tool_ids.assign(block.get("id"), block.get("name"))
             if new_id != block.get("id"):
                 block = {**block, "id": new_id}
