@@ -25,6 +25,16 @@ Implements the specification in issue #15.
 3. **`THINK_OUTPUT_MODE` post-processing** (`transform_events`) — controls how
    reasoning/thinking content is surfaced (`default` / `none` / `text` /
    `think_tag` / `bridge`).
+4. **Unique tool-call ids** (`tool_ids`) — vLLM's Kimi tool parser can return
+   the same `functions.<name>:0` id on every turn that calls the same tool. The
+   Claude Code CLI drops a later `tool_use`/`tool_result` pair whose id already
+   appears in the history (the model never sees its repeated call and loops on
+   it), and ChatDRAGON folds the running call into the first, finished card.
+   Both modes, streaming and not, replace a repeated or missing id with one the
+   request's history does not use — the next global index in the Kimi format
+   (`functions.<name>:<n>`) when the upstream id has that shape, else
+   `toolu_<hex>` — and log `replaced N repeated or missing tool_use id(s)`
+   (count only).
 
 Every other path (`/v1/models`, direct `/v1/chat/completions`, `/v1/embeddings`,
 …) is relayed **byte-for-byte** by the wildcard passthrough route.

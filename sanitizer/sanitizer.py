@@ -10,7 +10,9 @@ guaranteed to conform to the Anthropic Messages streaming spec:
   synthetic block when the upstream block type does not match;
 * ``index`` values are monotonically increasing from 0;
 * every ``content_block_start`` is paired with a ``content_block_stop`` before
-  the next start / ``message_delta`` / ``message_stop``.
+  the next start / ``message_delta`` / ``message_stop``;
+* with a :class:`~sanitizer.tool_ids.ToolIdAllocator`, every ``tool_use`` id is
+  unique against the request's history (Kimi repeats ``functions.<name>:0``).
 
 This works around LiteLLM's ``AnthropicStreamWrapper`` which leaks
 ``thinking_delta`` events into open ``text`` blocks, drops ``content_block_stop``
@@ -21,6 +23,8 @@ events, and explodes zero-payload ``input_json_delta`` events into empty
 from __future__ import annotations
 
 from typing import AsyncIterator, Dict, Optional
+
+from .tool_ids import ToolIdAllocator
 
 # Which block types a given delta type is allowed to live in.
 DELTA_COMPATIBLE_BLOCKS = {
@@ -119,6 +123,7 @@ def normalize_anthropic_message_body(body: Dict) -> Dict:
 
 async def sanitize_events(
     upstream: AsyncIterator[Dict],
+    tool_ids: Optional[ToolIdAllocator] = None,
 ) -> AsyncIterator[Dict]:
     message_started = False
     open_type: Optional[str] = None
@@ -130,10 +135,15 @@ async def sanitize_events(
         open_type = block_type
         open_index = next_index
         next_index += 1
+        block = _normalize_content_block(block_type, content_block)
+        if tool_ids is not None and block_type in ("tool_use", "server_tool_use"):
+            new_id = tool_ids.assign(block.get("id"), block.get("name"))
+            if new_id != block.get("id"):
+                block = {**block, "id": new_id}
         return {
             "type": "content_block_start",
             "index": open_index,
-            "content_block": _normalize_content_block(block_type, content_block),
+            "content_block": block,
         }
 
     def close_block():
