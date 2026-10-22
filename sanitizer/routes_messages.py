@@ -34,6 +34,7 @@ from .openai_bridge import (
 )
 from .output_transform import transform_events
 from .sanitizer import normalize_anthropic_message_body, sanitize_events
+from .tool_ids import ToolIdAllocator, dedupe_body_tool_ids, history_tool_ids
 
 logger = logging.getLogger("sanitizer.routes_messages")
 
@@ -192,12 +193,19 @@ async def sanitize_messages(request: Request):
         target_url = f"{upstream}/v1/messages"
         content = raw
 
+    # Tool ids the conversation already uses: a repeat from the upstream is
+    # replaced so the client never sees the same id twice (tool_ids.py).
+    used_tool_ids = history_tool_ids(body)
+
     async def send(payload: bytes):
+        tool_ids = ToolIdAllocator(used_tool_ids)
         if is_stream:
             return await _handle_streaming(
-                target_url, payload, headers, timeout, use_bridge, think_mode, body
+                target_url, payload, headers, timeout, use_bridge, think_mode, body, tool_ids
             )
-        return await _handle_non_streaming(target_url, payload, headers, timeout, use_bridge)
+        return await _handle_non_streaming(
+            target_url, payload, headers, timeout, use_bridge, tool_ids
+        )
 
     response = await send(content)
     # The upstream teaches its vocabulary in the 400 it answers an unsupported
@@ -219,8 +227,18 @@ def _is_plain_400(response) -> bool:
     return isinstance(response, Response) and response.status_code == 400 and not isinstance(response, StreamingResponse)
 
 
+def _log_rewritten(tool_ids: ToolIdAllocator) -> None:
+    if tool_ids.rewritten:
+        logger.info("replaced %d repeated or missing tool_use id(s)", tool_ids.rewritten)
+
+
 async def _handle_non_streaming(
-    url: str, content: bytes, headers: Dict[str, str], timeout, use_bridge: bool
+    url: str,
+    content: bytes,
+    headers: Dict[str, str],
+    timeout,
+    use_bridge: bool,
+    tool_ids: ToolIdAllocator,
 ):
     client = _make_client(timeout)
     try:
@@ -247,6 +265,8 @@ async def _handle_non_streaming(
 
             if use_bridge and isinstance(parsed_body, dict):
                 anthropic_body = openai_response_to_anthropic_body(parsed_body)
+                anthropic_body = dedupe_body_tool_ids(anthropic_body, tool_ids)
+                _log_rewritten(tool_ids)
                 return Response(
                     content=json.dumps(anthropic_body).encode(),
                     status_code=resp.status_code,
@@ -256,6 +276,8 @@ async def _handle_non_streaming(
 
             if not use_bridge and isinstance(parsed_body, dict):
                 normalized_body = normalize_anthropic_message_body(parsed_body)
+                normalized_body = dedupe_body_tool_ids(normalized_body, tool_ids)
+                _log_rewritten(tool_ids)
                 if normalized_body is not parsed_body:
                     return Response(
                         content=json.dumps(normalized_body).encode(),
@@ -282,6 +304,7 @@ async def _handle_streaming(
     use_bridge: bool,
     think_mode: str,
     body: Dict,
+    tool_ids: ToolIdAllocator,
 ):
     client = _make_client(timeout)
     request = client.build_request("POST", url, content=content, headers=headers)
@@ -316,11 +339,12 @@ async def _handle_streaming(
                 events = openai_stream_to_anthropic_events(chunks, model)
             else:
                 events = _iter_sse_events(resp.aiter_lines())
-            events = sanitize_events(events)
+            events = sanitize_events(events, tool_ids)
             events = transform_events(events, think_mode)
             async for event in events:
                 yield _format_sse(event)
         finally:
+            _log_rewritten(tool_ids)
             await resp.aclose()
             await client.aclose()
 

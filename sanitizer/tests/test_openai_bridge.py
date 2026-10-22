@@ -310,10 +310,100 @@ def test_stream_interleaved_parallel_arguments():
         {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
     ]
     out = stream_to_events(chunks)
-    ijds = [e for e in out if e["type"] == "content_block_delta" and e["delta"]["type"] == "input_json_delta"]
     # each call's fragments concatenated in order → complete JSON per block
-    assert ijds[0]["delta"]["partial_json"] == '{"x":1}'
-    assert ijds[1]["delta"]["partial_json"] == '{"y":2}'
+    assert _tool_inputs(out) == {"A": '{"x":1}', "B": '{"y":2}'}
+    # A streams live (its two fragments as they came); B, interleaved with it,
+    # is flushed whole after A's block closes.
+    starts = [e for e in out if e["type"] == "content_block_start"]
+    assert [b["content_block"]["name"] for b in starts] == ["A", "B"]
+    assert len([e for e in out if e["type"] == "content_block_delta" and e["index"] == starts[0]["index"]]) == 2
+
+
+def _tool_inputs(out):
+    names = {
+        e["index"]: e["content_block"]["name"]
+        for e in out
+        if e["type"] == "content_block_start" and e["content_block"]["type"] == "tool_use"
+    }
+    joined = {}
+    for e in out:
+        if e["type"] == "content_block_delta" and e["delta"]["type"] == "input_json_delta":
+            name = names[e["index"]]
+            joined[name] = joined.get(name, "") + e["delta"]["partial_json"]
+    return joined
+
+
+def test_stream_tool_call_opens_as_soon_as_its_name_arrives():
+    """#35: the tool_use block starts with the call's first chunk, not after the
+    upstream stream ends — a long argument generation is no longer silent."""
+    consumed = []
+    marks = {}
+
+    async def upstream():
+        parts = ['{"query": "', "a" * 20, "b" * 20, '"}']
+        yield {"choices": [{"delta": {"reasoning_content": "plan"}}]}
+        yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "functions.slow:0", "type": "function", "function": {"name": "slow", "arguments": ""}}]}}]}
+        consumed.append("start")
+        for p in parts:
+            yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": p}}]}}]}
+            consumed.append(p)
+        yield {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+        consumed.append("finish")
+
+    async def _run():
+        out = []
+        async for e in openai_stream_to_anthropic_events(upstream(), "M"):
+            if e["type"] == "content_block_start" and e["content_block"]["type"] == "tool_use":
+                marks["start_after"] = list(consumed)
+            if e["type"] == "content_block_delta" and e["delta"]["type"] == "input_json_delta":
+                marks.setdefault("deltas_after", []).append(len(consumed))
+            out.append(e)
+        return out
+
+    out = asyncio.run(_run())
+    assert marks["start_after"] == []  # before any later chunk was even read
+    assert marks["deltas_after"] == [1, 2, 3, 4]  # one per fragment, as it arrived
+    assert _tool_inputs(out) == {"slow": '{"query": "' + "a" * 20 + "b" * 20 + '"}'}
+    starts = [(e["index"], e["content_block"]["type"]) for e in out if e["type"] == "content_block_start"]
+    assert starts == [(0, "thinking"), (1, "tool_use")]
+    stops = [e["index"] for e in out if e["type"] == "content_block_stop"]
+    assert stops == [0, 1]
+
+
+def test_stream_text_after_a_live_tool_call_follows_its_block():
+    chunks = [
+        {"choices": [{"delta": {"content": "before"}}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c0", "function": {"name": "A", "arguments": "{\"x\":"}}]}}]},
+        {"choices": [{"delta": {"content": "after"}}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "1}"}}]}}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+    out = stream_to_events(chunks)
+    starts = [e["content_block"]["type"] for e in out if e["type"] == "content_block_start"]
+    assert starts == ["text", "tool_use", "text"]
+    assert _tool_inputs(out) == {"A": '{"x":1}'}
+    texts = [e["delta"]["text"] for e in out if e["type"] == "content_block_delta" and e["delta"]["type"] == "text_delta"]
+    assert texts == ["before", "after"]
+    # every block is closed before the next opens
+    open_ = None
+    for e in out:
+        if e["type"] == "content_block_start":
+            assert open_ is None
+            open_ = e["index"]
+        elif e["type"] == "content_block_stop":
+            assert open_ == e["index"]
+            open_ = None
+    assert open_ is None
+
+
+def test_stream_a_call_whose_name_comes_late_is_still_complete():
+    chunks = [
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c0", "function": {"arguments": "{\"a\":"}}]}}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "A", "arguments": "1}"}}]}}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+    out = stream_to_events(chunks)
+    assert _tool_inputs(out) == {"A": '{"a":1}'}
 
 
 # --------------------------------------------------------------------------- #

@@ -19,12 +19,27 @@ Implements the specification in issue #15.
    `SANITIZER_USE_OPENAI_BRIDGE=true`, calls the upstream's known-good
    `/v1/chat/completions` route directly and translates in-process, sidestepping
    LiteLLM's broken `/v1/messages` adapter. Handles system-message merging,
-   tool-call buffering/flush, and **relocates images returned inside
+   tool-call streaming (the first named call opens its `tool_use` block with
+   its first chunk and streams its arguments, so a client sees it start while
+   the model writes it; other calls of a parallel batch are flushed after it),
+   and **relocates images returned inside
    `tool_result` blocks into a trailing user message** (OpenAI `role:"tool"`
    messages cannot carry images — the fix for gateway issue #140).
 3. **`THINK_OUTPUT_MODE` post-processing** (`transform_events`) — controls how
    reasoning/thinking content is surfaced (`default` / `none` / `text` /
    `think_tag` / `bridge`).
+4. **Unique tool-call ids** (`tool_ids`) — vLLM's Kimi tool parser can return
+   the same `functions.<name>:0` id on every turn that calls the same tool. The
+   Claude Code CLI drops a later `tool_use`/`tool_result` pair whose id already
+   appears in the history (the model never sees its repeated call and loops on
+   it), and ChatDRAGON folds the running call into the first, finished card.
+   Both modes, streaming and not, replace a repeated or missing client
+   `tool_use` id (never a `server_tool_use`, whose result block in the same
+   response refers to it by id) with one the
+   request's history does not use — the next global index in the Kimi format
+   (`functions.<name>:<n>`) when the upstream id has that shape, else
+   `toolu_<hex>` — and log `replaced N repeated or missing tool_use id(s)`
+   (count only).
 
 Every other path (`/v1/models`, direct `/v1/chat/completions`, `/v1/embeddings`,
 …) is relayed **byte-for-byte** by the wildcard passthrough route.
