@@ -19,7 +19,10 @@ Implements the specification in issue #15.
    `SANITIZER_USE_OPENAI_BRIDGE=true`, calls the upstream's known-good
    `/v1/chat/completions` route directly and translates in-process, sidestepping
    LiteLLM's broken `/v1/messages` adapter. Handles system-message merging,
-   tool-call buffering/flush, and **relocates images returned inside
+   tool-call streaming (the first named call opens its `tool_use` block with
+   its first chunk and streams its arguments, so a client sees it start while
+   the model writes it; other calls of a parallel batch are flushed after it),
+   and **relocates images returned inside
    `tool_result` blocks into a trailing user message** (OpenAI `role:"tool"`
    messages cannot carry images — the fix for gateway issue #140).
 3. **`THINK_OUTPUT_MODE` post-processing** (`transform_events`) — controls how

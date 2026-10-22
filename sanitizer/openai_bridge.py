@@ -479,6 +479,13 @@ class _StreamState:
         self.open_index: Optional[int] = None
         self.next_index = 0
         self.pending_tool_calls: Dict[int, _PendingToolCall] = {}
+        # The tool call streamed as it arrives (the first one to get a name):
+        # its OpenAI index, and how much of its arguments is already sent.
+        self.live_tool: Optional[int] = None
+        self.live_sent = 0
+        # reasoning/content that arrived after the live tool block opened,
+        # replayed after the tool blocks so each block stays contiguous.
+        self.after_tool: List[Tuple[str, str]] = []
         self.input_tokens = 0
         self.output_tokens = 0
         self.finish_reason: Optional[str] = None
@@ -514,7 +521,18 @@ def _ensure_block(state: _StreamState, kind: str, content_block: Dict) -> List[D
     return events
 
 
-def _buffer_tool_calls(state: _StreamState, tool_calls) -> None:
+def _stream_tool_calls(state: _StreamState, tool_calls) -> List[Dict]:
+    """Accumulate ``tool_calls`` deltas, streaming the first named call live.
+
+    The first call whose name is known opens its ``tool_use`` block at once and
+    forwards its argument fragments as they arrive, so a client sees the call
+    start while the model is still writing it — LiteLLM/vLLM stream a call's
+    name in its first chunk, and buffering the whole call until the upstream
+    stream ended hid a long argument generation behind silence (#35). Other
+    calls of a parallel batch stay buffered and are flushed after the live
+    block closes (their fragments may interleave with the live one's).
+    """
+    events: List[Dict] = []
     for tc in tool_calls:
         if not isinstance(tc, dict):
             continue
@@ -527,11 +545,55 @@ def _buffer_tool_calls(state: _StreamState, tool_calls) -> None:
             pending.name = function["name"]
         if function.get("arguments"):
             pending.arguments += function["arguments"]
+        if state.live_tool is None and pending.name:
+            events.extend(_open_live_tool(state, idx, pending))
+        if state.live_tool == idx and len(pending.arguments) > state.live_sent:
+            events.append(
+                {
+                    "type": "content_block_delta",
+                    "index": state.open_index,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": pending.arguments[state.live_sent :],
+                    },
+                }
+            )
+            state.live_sent = len(pending.arguments)
+    return events
+
+
+def _open_live_tool(state: _StreamState, idx: int, pending: _PendingToolCall) -> List[Dict]:
+    events: List[Dict] = []
+    # Text before the call is complete: a held partial <think> tag is text.
+    if state.think_carry:
+        carry, state.think_carry = state.think_carry, ""
+        events.extend(_emit_segment(state, "thinking" if state.in_think else "text", carry))
+    events.extend(_close_open(state))
+    state.live_tool = idx
+    state.live_sent = 0
+    state.open_kind = "tool_use"
+    state.open_index = state.next_index
+    state.next_index += 1
+    events.append(
+        {
+            "type": "content_block_start",
+            "index": state.open_index,
+            "content_block": {
+                "type": "tool_use",
+                "id": pending.id or "",
+                "name": pending.name or "",
+                "input": {},
+            },
+        }
+    )
+    return events
 
 
 def _flush_tool_calls(state: _StreamState) -> List[Dict]:
     events = _close_open(state)
     for idx in sorted(state.pending_tool_calls.keys()):
+        if idx == state.live_tool:
+            continue  # streamed live; closed just above
         pending = state.pending_tool_calls[idx]
         block_index = state.next_index
         state.next_index += 1
@@ -636,6 +698,14 @@ async def openai_stream_to_anthropic_events(
             delta = choice.get("delta") or {}
 
             reasoning = delta.get("reasoning_content")
+            content = delta.get("content")
+            if state.live_tool is not None:
+                # A tool block is open: hold the rest until it closes.
+                if reasoning:
+                    state.after_tool.append(("reasoning", reasoning))
+                if content:
+                    state.after_tool.append(("content", content))
+                reasoning = content = None
             if reasoning:
                 for ev in _ensure_block(
                     state,
@@ -653,13 +723,13 @@ async def openai_stream_to_anthropic_events(
                     "delta": {"type": "thinking_delta", "thinking": reasoning},
                 }
 
-            content = delta.get("content")
             if content:  # empty-string content chunks must not open a block
                 for ev in _emit_content(state, content):
                     yield ev
 
             if delta.get("tool_calls"):
-                _buffer_tool_calls(state, delta["tool_calls"])
+                for ev in _stream_tool_calls(state, delta["tool_calls"]):
+                    yield ev
 
     # A trailing partial tag that never completed is ordinary text after all.
     if state.think_carry:
@@ -668,6 +738,22 @@ async def openai_stream_to_anthropic_events(
             yield ev
 
     for ev in _flush_tool_calls(state):
+        yield ev
+
+    # What arrived while the live tool block was open, in upstream order.
+    live_tool, state.live_tool = state.live_tool, None
+    for kind, text in state.after_tool:
+        if kind == "reasoning":
+            for ev in _emit_segment(state, "thinking", text):
+                yield ev
+        else:
+            for ev in _emit_content(state, text):
+                yield ev
+    if live_tool is not None and state.think_carry:
+        carry, state.think_carry = state.think_carry, ""
+        for ev in _emit_segment(state, "thinking" if state.in_think else "text", carry):
+            yield ev
+    for ev in _close_open(state):
         yield ev
 
     stop_reason = _FINISH_REASON_MAP.get(state.finish_reason, "end_turn")
