@@ -21,6 +21,9 @@ from urllib.parse import urlsplit
 _NAME = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _POLICIES = frozenset({"cache_aware", "power_of_two", "least_load", "prefix_hash", "round_robin"})
 _RESERVED_PORTS = {3996, 3997, 3999}  # sanitizer, existing balancer, LiteLLM
+# SMG opens a Prometheus listener per process (default 29000 on 0.0.0.0), so
+# every pool needs its own metrics port; by default it is the API port + this.
+_METRICS_PORT_OFFSET = 20000
 
 
 class ConfigError(ValueError):
@@ -33,6 +36,17 @@ class Pool:
     port: int
     workers: tuple[str, ...]
     policy: str = "cache_aware"
+    metrics_port: int = 0
+
+
+def _port(name: str, key: str, value: object, used: set[int]) -> int:
+    if type(value) is not int or not (1024 <= value <= 65535) or value in _RESERVED_PORTS or value in used:
+        raise ConfigError(
+            f"pool {name}: {key} {value!r} must be an unreserved integer from 1024 to 65535,"
+            " distinct from every other pool's port and metrics_port"
+        )
+    used.add(value)
+    return value
 
 
 def _worker_url(raw: object) -> str:
@@ -79,12 +93,11 @@ def parse_pools(raw: str) -> list[Pool]:
     for name, config in data.items():
         if not isinstance(name, str) or not _NAME.fullmatch(name):
             raise ConfigError(f"invalid pool name {name!r}")
-        if not isinstance(config, dict) or set(config) - {"port", "workers", "policy"}:
-            raise ConfigError(f"pool {name}: expected only port, workers, optional policy")
-        port = config.get("port")
-        if type(port) is not int or not (1024 <= port <= 65535) or port in _RESERVED_PORTS or port in ports:
-            raise ConfigError(f"pool {name}: port must be a unique unreserved integer from 1024 to 65535")
-        ports.add(port)
+        if not isinstance(config, dict) or set(config) - {"port", "workers", "policy", "metrics_port"}:
+            raise ConfigError(f"pool {name}: expected only port, workers, optional policy and metrics_port")
+        port = _port(name, "port", config.get("port"), ports)
+        default_metrics = port + _METRICS_PORT_OFFSET if port + _METRICS_PORT_OFFSET <= 65535 else None
+        metrics_port = _port(name, "metrics_port", config.get("metrics_port", default_metrics), ports)
         policy = config.get("policy", "cache_aware")
         if not isinstance(policy, str) or policy not in _POLICIES:
             raise ConfigError(f"pool {name}: unsupported policy {policy!r}; choose from {sorted(_POLICIES)}")
@@ -94,7 +107,7 @@ def parse_pools(raw: str) -> list[Pool]:
         urls = tuple(dict.fromkeys(_worker_url(w) for w in workers))
         if len(urls) < 2:
             raise ConfigError(f"pool {name}: at least two distinct workers are required")
-        pools.append(Pool(name, port, urls, policy))
+        pools.append(Pool(name, port, urls, policy, metrics_port))
     return pools
 
 
@@ -105,6 +118,7 @@ def command(pool: Pool) -> list[str]:
     return [
         "smg", "launch", "--worker-urls", *pool.workers,
         "--policy", pool.policy, "--host", "127.0.0.1", "--port", str(pool.port),
+        "--prometheus-host", "127.0.0.1", "--prometheus-port", str(pool.metrics_port),
         "--disable-retries", "--load-monitor-interval", "2",
     ]
 
@@ -130,7 +144,11 @@ def main() -> int:
     signal.signal(signal.SIGINT, stop)
     try:
         for pool in pools:
-            print(f"Starting SMG pool {pool.name} at 127.0.0.1:{pool.port} ({len(pool.workers)} workers)", flush=True)
+            print(
+                f"Starting SMG pool {pool.name} at 127.0.0.1:{pool.port}"
+                f" (metrics :{pool.metrics_port}, {len(pool.workers)} workers)",
+                flush=True,
+            )
             children.append(subprocess.Popen(command(pool)))
         while not stopping:
             for pool, child in zip(pools, children):

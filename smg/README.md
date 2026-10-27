@@ -30,8 +30,12 @@ docker compose -f docker-compose.yml -f docker-compose.smg.yml up -d smg
 ```
 
 Port `3998` and `4000` are examples; `3996` (sanitizer), `3997` (legacy
-balancer) and `3999` (LiteLLM) are reserved. The stack uses host networking,
-so SMG binds to **127.0.0.1 only**. No extra GPU or changes to Oh My Gateway
+balancer) and `3999` (LiteLLM) are reserved. Every SMG process also opens its
+own Prometheus listener, so each pool gets a metrics port: `port + 20000` by
+default (`23998`, `24000` above), or an explicit `"metrics_port"`. All API and
+metrics ports must be distinct from each other and from the reserved ports; the
+launcher refuses the whole config otherwise. The stack uses host networking,
+so SMG binds both the API and metrics listeners to **127.0.0.1 only**. No extra GPU or changes to Oh My Gateway
 are required. This Compose overlay must run on the same host/network namespace
 as LiteLLM. For separate machines, use a trusted internal endpoint and adapt
 the binding/network topology explicitly.
@@ -49,6 +53,7 @@ require a separate gRPC worker migration.
 curl -fsS http://127.0.0.1:3998/health
 curl -fsS http://127.0.0.1:3998/readiness
 curl -fsS http://127.0.0.1:3998/workers
+curl -fsS http://127.0.0.1:23998/metrics | head   # this pool's metrics port
 ```
 
 The workers' `/v1/models` must report the model name LiteLLM sends to them.
