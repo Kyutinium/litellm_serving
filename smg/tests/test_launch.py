@@ -42,6 +42,7 @@ class SMGConfigTests(unittest.TestCase):
             json.dumps({"a": {"port": 3999, "workers": valid["a"]["workers"]}}),
             json.dumps({"a": {"port": True, "workers": valid["a"]["workers"]}}),
             json.dumps({"a": {"port": 3998, "policy": "nonsense", "workers": valid["a"]["workers"]}}),
+            json.dumps({"a": {"port": 3998, "policy": [], "workers": valid["a"]["workers"]}}),
             json.dumps({"a": {"port": 3998, "workers": ["file:///etc/passwd", "http://a2:8000"]}}),
             json.dumps({"a": {"port": 3998, "workers": ["http://name:secret@a1:8000", "http://a2:8000"]}}),
             json.dumps({"a": {"port": 3998, "workers": ["http://a1:8000/private", "http://a2:8000"]}}),
