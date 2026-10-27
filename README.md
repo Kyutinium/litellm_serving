@@ -169,6 +169,18 @@ LiteLLM 자체 Anthropic 어댑터로 그대로 중계되어 변환도 clamp도 
 
 자세한 내용과 실행/테스트 방법은 [`sanitizer/README.md`](sanitizer/README.md) 참조.
 
+## 선택형 SMG Router (HTTP PoC)
+
+3~4개의 동일 모델 인스턴스에 대한 `cache_aware` 분산을 시험하려면
+[`smg/README.md`](smg/README.md)를 참고하세요. 별도
+[`docker-compose.smg.yml`](docker-compose.smg.yml) 오버레이를 사용하므로 기본 배포는
+변경되지 않습니다. 기존 `balancer/`는 보존하고, SMG는 대체 라우트로만 사용합니다.
+`scripts/benchmark_smg.py`로 shuffle / 자체 balancer / SMG의 TTFT와 처리량을
+같은 조건에서 비교할 수 있습니다. SMG HTTP 모드는 실제 KV-cache 이벤트가 아닌
+추정 기반 prefix routing이므로 성능 검증 후 선택적으로 전환하세요.
+
+---
+
 ## vLLM 여러 대에 부하 기준으로 나누기 (balancer)
 
 같은 모델을 vLLM 여러 대로 띄웠을 때 LiteLLM `routing_strategy: least-busy`는 동시에 들어온 요청을
