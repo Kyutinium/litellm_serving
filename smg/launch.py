@@ -86,7 +86,7 @@ def parse_pools(raw: str) -> list[Pool]:
             raise ConfigError(f"pool {name}: port must be a unique unreserved integer from 1024 to 65535")
         ports.add(port)
         policy = config.get("policy", "cache_aware")
-        if policy not in _POLICIES:
+        if not isinstance(policy, str) or policy not in _POLICIES:
             raise ConfigError(f"pool {name}: unsupported policy {policy!r}; choose from {sorted(_POLICIES)}")
         workers = config.get("workers")
         if not isinstance(workers, list) or len(workers) < 2:
