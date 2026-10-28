@@ -1,0 +1,13 @@
+# Opt-in overlay: docker compose -f docker-compose.yml -f docker-compose.smg.yml up -d
+# Each SMG pool listens only on loopback because the main LiteLLM service uses
+# host networking.  Leave the existing :3997 balancer and :3996 sanitizer intact.
+services:
+  smg:
+    image: ghcr.io/smg-project/smg:1.13.0
+    network_mode: host
+    entrypoint: ["python3", "/opt/chatdragon-smg/launch.py"]
+    environment:
+      SMG_POOLS: "${SMG_POOLS:?Set SMG_POOLS to JSON model pools}"
+    volumes:
+      - ./smg/launch.py:/opt/chatdragon-smg/launch.py:ro
+    restart: unless-stopped
