@@ -113,7 +113,7 @@ def get_think_output_mode() -> str:
 
 # Strict chat templates reject a system turn outside the initial prefix.
 # The role-swap policy retains a stable leading prefix for KV prefix caching.
-_DEFAULT_MID_SYSTEM_MODEL_PATTERN = r"qwen3\\.\\d|mistral-large-4"
+_DEFAULT_MID_SYSTEM_MODEL_PATTERN = r"qwen3[.][0-9]|mistral-large-4"
 _DEFAULT_TOOL_NORM_MODEL_PATTERN = r"mistral-large-4"
 _MID_SYSTEM_POLICIES = frozenset({"user", "hoist", "asis"})
 
