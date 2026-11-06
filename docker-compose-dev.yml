@@ -19,7 +19,7 @@ services:
       # the initial prompt prefix for better vLLM KV cache reuse. The defaults
       # below are active even when these examples remain commented out.
       # - SANITIZER_MID_SYSTEM_POLICY=user
-      # - SANITIZER_MID_SYSTEM_MODEL_PATTERN=qwen3\\.\\d|mistral-large-4
+      # - SANITIZER_MID_SYSTEM_MODEL_PATTERN=qwen3[.][0-9]|mistral-large-4
       # - SANITIZER_TOOL_NORM_MODEL_PATTERN=mistral-large-4
       # Effort levels are LEARNED per model: the sanitizer probes each listed
       # model at startup (SANITIZER_EFFORT_PROBE, default true; uses
