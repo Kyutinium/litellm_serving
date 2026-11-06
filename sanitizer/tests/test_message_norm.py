@@ -45,13 +45,24 @@ def test_default_model_gates(monkeypatch):
     assert not tool_gate.search("qwen3.6-27b")
 
 
-@pytest.mark.parametrize("name, default", [
-    ("SANITIZER_MID_SYSTEM_MODEL_PATTERN", config._DEFAULT_MID_SYSTEM_MODEL_PATTERN),
-    ("SANITIZER_TOOL_NORM_MODEL_PATTERN", config._DEFAULT_TOOL_NORM_MODEL_PATTERN),
+@pytest.mark.parametrize("name, getter, default", [
+    (
+        "SANITIZER_MID_SYSTEM_MODEL_PATTERN",
+        config.get_mid_system_model_regex,
+        config._DEFAULT_MID_SYSTEM_MODEL_PATTERN,
+    ),
+    (
+        "SANITIZER_TOOL_NORM_MODEL_PATTERN",
+        config.get_tool_norm_model_regex,
+        config._DEFAULT_TOOL_NORM_MODEL_PATTERN,
+    ),
 ])
-def test_invalid_regex_uses_default(monkeypatch, name, default):
+def test_invalid_regex_uses_default(monkeypatch, name, getter, default):
+    # The public getter (what the bridge calls) falls back to the default gate.
     monkeypatch.setenv(name, "(")
-    assert config._get_regex(name, default).pattern == default
+    regex = getter()
+    assert regex.pattern == default
+    assert regex.flags & re.IGNORECASE
 
 
 def test_config_overrides_and_policy(monkeypatch):
