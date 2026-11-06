@@ -15,6 +15,12 @@ services:
       # Sanitizer listens here; point clients' ANTHROPIC_BASE_URL at it.
       - SANITIZER_PORT=5501
       - SANITIZER_USE_OPENAI_BRIDGE=true
+      # Strict Qwen3.x / Mistral Large 4: keep late system reminders out of
+      # the initial prompt prefix for better vLLM KV cache reuse. The defaults
+      # below are active even when these examples remain commented out.
+      # - SANITIZER_MID_SYSTEM_POLICY=user
+      # - SANITIZER_MID_SYSTEM_MODEL_PATTERN=qwen3\\.\\d|mistral-large-4
+      # - SANITIZER_TOOL_NORM_MODEL_PATTERN=mistral-large-4
       # Effort levels are LEARNED per model: the sanitizer probes each listed
       # model at startup (SANITIZER_EFFORT_PROBE, default true; uses
       # LITELLM_MASTER_KEY above) and reads the vocabulary a vLLM build names in
