@@ -57,7 +57,7 @@ Every other path (`/v1/models`, direct `/v1/chat/completions`, `/v1/embeddings`,
 | `SANITIZER_REQUEST_TIMEOUT` | `0` | Seconds; `0`/empty/negative → no timeout |
 | `SANITIZER_USE_OPENAI_BRIDGE` | `false` | Enable the OpenAI bridge route |
 | `SANITIZER_MID_SYSTEM_POLICY` | `user` | For matched models: `user` (demote late system turns in place), `hoist` (merge all into front), `asis` (unchanged) |
-| `SANITIZER_MID_SYSTEM_MODEL_PATTERN` | `qwen3\\.\\d\|mistral-large-4` | Case-insensitive regex searched against request model; nonmatches keep legacy `hoist` behavior. Set `.*` for all models |
+| `SANITIZER_MID_SYSTEM_MODEL_PATTERN` | `qwen3[.][0-9]\|mistral-large-4` | Case-insensitive regex searched against request model; nonmatches keep legacy `hoist` behavior. Set `.*` for all models |
 | `SANITIZER_TOOL_NORM_MODEL_PATTERN` | `mistral-large-4` | Case-insensitive regex selecting models whose matching tool results move adjacent to their assistant tool-call turn |
 | `SANITIZER_FORWARD_REASONING_EFFORT` | `true` | Carry Anthropic `output_config.effort` into the OpenAI `reasoning_effort` field |
 | `SANITIZER_EFFORT_VOCABULARY` | *(unset)* | **Manual override**: JSON map of model name → effort levels its upstream accepts. Normally unnecessary — the levels are learned (below). A declared entry wins over a learned one |
