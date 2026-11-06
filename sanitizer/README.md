@@ -56,11 +56,50 @@ Every other path (`/v1/models`, direct `/v1/chat/completions`, `/v1/embeddings`,
 | `SANITIZER_TLS_VERIFY` | `true` | `true/false/…` or a CA bundle path |
 | `SANITIZER_REQUEST_TIMEOUT` | `0` | Seconds; `0`/empty/negative → no timeout |
 | `SANITIZER_USE_OPENAI_BRIDGE` | `false` | Enable the OpenAI bridge route |
+| `SANITIZER_MID_SYSTEM_POLICY` | `user` | For matched models: `user` (demote late system turns in place), `hoist` (merge all into front), `asis` (unchanged) |
+| `SANITIZER_MID_SYSTEM_MODEL_PATTERN` | `qwen3\\.\\d\|mistral-large-4` | Case-insensitive regex searched against request model; nonmatches keep legacy `hoist` behavior. Set `.*` for all models |
+| `SANITIZER_TOOL_NORM_MODEL_PATTERN` | `mistral-large-4` | Case-insensitive regex selecting models whose matching tool results move adjacent to their assistant tool-call turn |
 | `SANITIZER_FORWARD_REASONING_EFFORT` | `true` | Carry Anthropic `output_config.effort` into the OpenAI `reasoning_effort` field |
 | `SANITIZER_EFFORT_VOCABULARY` | *(unset)* | **Manual override**: JSON map of model name → effort levels its upstream accepts. Normally unnecessary — the levels are learned (below). A declared entry wins over a learned one |
 | `SANITIZER_EFFORT_PROBE` | `true` | At startup, ask the upstream which effort levels each listed model takes (1-token requests, in the background). `false` = learn only from real 400s |
 | `SANITIZER_UPSTREAM_API_KEY` | *(`LITELLM_MASTER_KEY` if set)* | Bearer the probe uses for its own upstream requests |
 | `THINK_OUTPUT_MODE` | `default` | `default` / `none` / `text` / `think_tag` / `bridge` |
+
+### System-message placement, tool results and KV prefix caching
+
+Inspired by [UniBridge commit 224150e](https://github.com/JinY0ung-Shin/UniBridge/commit/224150e3f0db293a23e32222da8b8625c246e881).
+Claude Code can insert `role: "system"` reminders into conversation history.
+Previously this sanitizer hoisted **every** system turn to the front. When
+a new reminder arrived mid-conversation, it changed the start of the rendered
+prompt and could invalidate a long reusable prefix in vLLM prefix caching.
+
+For `qwen3.<digit>` (Qwen3.5/3.6/3.8) and `mistral-large-4`, default
+`SANITIZER_MID_SYSTEM_POLICY=user` instead keeps the **initial** system
+prompt at the front (merging only a leading run of system messages) and
+converts later system turns to `user` *at their existing history position*.
+This retains the earlier prompt prefix, at the cost of changing late
+reminders from system authority to user authority. For unlisted models
+the historical hoist-all behavior remains unchanged. If desired,
+`SANITIZER_MID_SYSTEM_MODEL_PATTERN=.*` enables the policy for all model
+names, while `SANITIZER_MID_SYSTEM_POLICY=hoist` restores hoisting for
+matched models. Use `asis` only when the backend accepts the original role
+order. These settings act **only** on the bridge-enabled
+`POST /v1/messages` route; they do not rewrite direct chat/completions or
+the bridge-disabled passthrough.
+
+For Mistral Large 4, which rejects `user -> tool` in its chat template,
+the bridge also moves `tool` results **matching the preceding assistant's
+tool-call IDs** ahead of intervening user/system turns. It preserves contents,
+relative order and other messages; orphan tool messages are left untouched.
+System normalization runs first, tool normalization second. Both are pure
+and idempotent. Model names are matched case-insensitively, including
+provider-prefixed IDs, or can be overridden with the two regex settings.
+
+**Prefix cache caveat:** this prevents *one source* of prefix invalidation;
+actual hits also depend on unchanged tokenization/chat template, tool schemas,
+model identity, KV settings and the request's common token prefix. Neither
+this change nor the sanitizer guarantees a cache hit. Measure with
+`vllm:gpu_prefix_cache_hit_rate` or the corresponding serving metrics.
 
 ### Reasoning effort
 
