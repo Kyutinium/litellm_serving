@@ -22,6 +22,7 @@ from typing import AsyncIterator, Dict, List, Optional, Tuple
 
 from sanitizer import config
 from sanitizer.effort import clamp_to_supported, supported_levels
+from sanitizer.message_norm import normalize_system_messages, normalize_tool_messages
 
 logger = logging.getLogger("sanitizer.openai_bridge")
 
@@ -422,28 +423,42 @@ def anthropic_request_to_openai_body(body: Dict) -> Dict:
     if body.get("stop_sequences"):
         out["stop"] = body["stop_sequences"]
 
-    # Merge top-level system + any system-role messages into one leading system
-    # message (vLLM: "System message must be at the beginning.").
+    # Keep the top-level system prompt stable: merging later reminders into it
+    # invalidates the longest reusable KV prefix on every reminder update.
+    # Mid-history system turns instead keep their position for the strict
+    # Qwen3.x / Mistral Large 4 models (demoted to user, per model policy).
+    # Other models retain the old hoist behavior for compatibility.
+    messages: List[Dict] = []
     system_texts = _extract_system_texts(body.get("system"))
+    if system_texts:
+        messages.append({"role": "system", "content": "\n\n".join(system_texts)})
 
-    converted: List[Dict] = []
     for msg in body.get("messages", []) or []:
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
         content = msg.get("content")
         if role == "system":
-            system_texts.extend(_extract_system_texts(content))
+            texts = _extract_system_texts(content)
+            if texts:
+                messages.append({"role": "system", "content": "\n\n".join(texts)})
         elif role == "assistant":
-            converted.append(_convert_assistant_message(content))
-        else:  # user (and any unknown role) → user conversion
-            converted.extend(_convert_user_message(content))
+            messages.append(_convert_assistant_message(content))
+        else:  # user (and any unknown role) -> user conversion
+            messages.extend(_convert_user_message(content))
 
-    messages: List[Dict] = []
-    if system_texts:
-        messages.append({"role": "system", "content": "\n\n".join(system_texts)})
-    messages.extend(converted)
-    out["messages"] = messages
+    # System placement first; then move Mistral Large 4's matching tool results
+    # next to the assistant tool_calls turn. Both passes are idempotent.
+    out["messages"] = normalize_tool_messages(
+        normalize_system_messages(
+            messages,
+            config.get_mid_system_policy(),
+            model=out.get("model"),
+            model_pattern=config.get_mid_system_model_regex(),
+        ),
+        model=out.get("model"),
+        model_pattern=config.get_tool_norm_model_regex(),
+    )
 
     if body.get("tools"):
         out["tools"] = [_convert_tool(t) for t in body["tools"] if isinstance(t, dict)]
