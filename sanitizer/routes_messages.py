@@ -162,7 +162,9 @@ def _format_sse(event: Dict) -> str:
 
 
 def _make_client(timeout) -> httpx.AsyncClient:
-    return httpx.AsyncClient(verify=get_tls_verify(), timeout=timeout)
+    # Never follow an upstream redirect: relay it, so a Location cannot send the
+    # request (and its credentials) to another origin.
+    return httpx.AsyncClient(verify=get_tls_verify(), timeout=timeout, follow_redirects=False)
 
 
 # --------------------------------------------------------------------------- #

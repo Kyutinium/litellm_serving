@@ -64,7 +64,7 @@ Every other path (`/v1/models`, direct `/v1/chat/completions`, `/v1/embeddings`,
 | `SANITIZER_EFFORT_PROBE` | `true` | At startup, ask the upstream which effort levels each listed model takes (1-token requests, in the background). `false` = learn only from real 400s |
 | `SANITIZER_UPSTREAM_API_KEY` | *(`LITELLM_MASTER_KEY` if set)* | Bearer the probe uses for its own upstream requests |
 | `THINK_OUTPUT_MODE` | `default` | `default` / `none` / `text` / `think_tag` / `bridge` |
-| `SANITIZER_PUBLIC_PATHS` | *(unset = no gate)* | Comma-separated path prefixes anyone with the key may use (e.g. `/v1/messages`). Every other path — the relay of `/v1/models`, `/model/info`, LiteLLM admin routes, and this proxy's `/openapi.json`, `/docs`, `/sanitizer/effort-levels` — answers 404 unless the internal header is present. `/health` is always open. See *Path gate* |
+| `SANITIZER_PUBLIC_ROUTES` | *(unset = no gate)* | Comma-separated **exact** `METHOD /path` pairs anyone with the key may use (e.g. `POST /v1/messages, POST /v1/messages/count_tokens`). No prefixes, sub-paths, trailing slashes or wildcards. Every other request — the relay of `/v1/models`, `/model/info`, LiteLLM admin routes, and this proxy's `/openapi.json`, `/docs`, `/sanitizer/effort-levels` — answers 404 unless the internal header is present. `GET /health` is always open. See *Path gate* |
 | `SANITIZER_INTERNAL_TOKEN` | *(unset)* | Secret for the `X-Sanitizer-Internal` header that opens non-public paths for trusted callers (the gateway's model discovery). Unset with the gate on = no private path opens |
 
 ### System-message placement, tool results and KV prefix caching
@@ -247,21 +247,36 @@ routes, and fetch this proxy's `/openapi.json` — in production a session did e
 that (oh-my-gateway#286).
 
 ```bash
-SANITIZER_PUBLIC_PATHS=/v1/messages          # covers /v1/messages/count_tokens too
+SANITIZER_PUBLIC_ROUTES="POST /v1/messages, POST /v1/messages/count_tokens"
 SANITIZER_INTERNAL_TOKEN=$(openssl rand -hex 32)
 ```
 
-- Public prefixes (and `/health`) behave as before. Every other path is a plain 404 that
-  never reaches LiteLLM, unless the request carries `X-Sanitizer-Internal: <token>`.
+- **Exact match** on method, path and the raw bytes the client sent. `POST /v1/messages`
+  does not open `POST /v1/messages/`, `POST /v1/messages/batches`, `GET /v1/messages` or
+  `/v1/%6dessages`: a sub-path LiteLLM adds later stays closed until it is listed.
+  `GET /health` is the only built-in public route (not `/health/*`, not `HEAD`).
+- Everything else is a plain 404 that never reaches LiteLLM, unless the request carries
+  `X-Sanitizer-Internal: <token>`.
 - Give the token **only** to trusted server-side callers — the gateway's model discovery
   (`SANITIZER_INTERNAL_TOKEN` in oh-my-gateway, which blanks it in every CLI child). Never
   put it where an agent session can read it.
-- Non-canonical paths (`..`, `.`, `//`, a backslash, percent-encoded `/`, `.` or `\`) are
-  refused for every caller: LiteLLM could normalise `/v1/messages/../model/info` into
-  `/model/info` after the prefix check.
+- A token-bearing request must still be canonical: `..`/`.` segments, `//`, a backslash,
+  percent-encoded `/`, `.`, `\` or `%` (double encoding), and a decoded `?`, `#`, `;`,
+  space, control or non-ASCII character are refused.
+- The passthrough relays the client's **raw** path bytes, so LiteLLM decodes exactly what
+  the gate decoded (rebuilding the URL from the decoded path used to turn `%3F` into a
+  query separator and `%2F` into a real `/`). The query string is relayed as sent. The
+  Messages route posts to the upstream's fixed `/v1/messages`, as before.
+- Upstream redirects are relayed to the client, never followed.
 - The internal header is stripped before the request is relayed upstream.
+- The retired prefix variable `SANITIZER_PUBLIC_PATHS` (never released) refuses startup
+  instead of running ungated.
 - Other clients of this sanitizer (an OpenAI-bridge client on `/v1/chat/completions`, a
-  service that lists `/v1/models`) need their path in the public list or the header.
+  service that lists `/v1/models`) need their route in the list or the header.
+- Tests: `sanitizer/tests/test_access.py` (ASGI scope) and
+  `sanitizer/tests/test_access_uvicorn.py` (real uvicorn → real HTTP upstream, raw
+  request bytes: refused spellings never reach the upstream, streaming passes, redirects
+  are not followed).
 
 ## Topology
 

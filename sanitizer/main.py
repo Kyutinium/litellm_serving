@@ -25,7 +25,7 @@ from .effort import (
 from .config import (
     get_internal_token,
     get_port,
-    get_public_paths,
+    get_public_routes,
     get_think_output_mode,
     get_upstream_url,
     is_openai_bridge_enabled,
@@ -65,12 +65,16 @@ async def _log_active_config() -> None:
     # declaration; refuse to start instead (see sanitizer.effort).
     validate_at_startup()
     # A malformed gate list must not go live as "no gate" (it raises, refusing to start)
-    public = get_public_paths()
+    public = get_public_routes()
     if public is not None:
-        logger.info("path gate on: public=%s internal_token=%s", list(public), bool(get_internal_token()))
+        logger.info(
+            "path gate on: public=%s internal_token=%s",
+            sorted(f"{m} {p}" for m, p in public),
+            bool(get_internal_token()),
+        )
         if not get_internal_token():
             logger.warning(
-                "SANITIZER_PUBLIC_PATHS is set without SANITIZER_INTERNAL_TOKEN: every other path "
+                "SANITIZER_PUBLIC_ROUTES is set without SANITIZER_INTERNAL_TOKEN: every other request "
                 "(including /v1/models for model discovery) answers 404"
             )
     logger.info(

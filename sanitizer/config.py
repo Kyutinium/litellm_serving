@@ -161,26 +161,55 @@ def get_tool_norm_model_regex() -> re.Pattern[str]:
 # The sanitizer relays every path to LiteLLM (``/{path:path}``). A client that only needs
 # the Messages API — an agent session's CLI — could also read ``/v1/models``,
 # ``/model/info`` (backend api_base URLs, token limits), LiteLLM's admin routes and this
-# proxy's own ``/openapi.json`` with the same key. With ``SANITIZER_PUBLIC_PATHS`` set,
-# only those path prefixes stay open; every other path needs the internal header.
+# proxy's own ``/openapi.json`` with the same key. With ``SANITIZER_PUBLIC_ROUTES`` set,
+# only those exact ``METHOD /path`` pairs stay open; every other request needs the
+# internal header. Exact, not prefixes: a sub-path LiteLLM adds later
+# (``/v1/messages/batches``) must not open itself.
 
 INTERNAL_HEADER = "x-sanitizer-internal"
 
+_ROUTE_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+# Unreserved characters only: no ``%`` (encoding), ``;`` (matrix params), ``*`` (no
+# wildcards), and never a trailing slash.
+_ROUTE_SEGMENT = re.compile(r"[A-Za-z0-9._~-]+")
 
-def get_public_paths():
-    """``None`` (no gate, the default) or the tuple of public path prefixes."""
-    raw = os.environ.get("SANITIZER_PUBLIC_PATHS", "")
+
+def get_public_routes():
+    """``None`` (no gate, the default) or the frozenset of public ``(METHOD, path)``."""
+    raw = os.environ.get("SANITIZER_PUBLIC_ROUTES", "")
     if not raw.strip():
+        if os.environ.get("SANITIZER_PUBLIC_PATHS", "").strip():
+            # The prefix form never shipped; refuse rather than silently run ungated.
+            raise ValueError(
+                "SANITIZER_PUBLIC_PATHS was replaced by SANITIZER_PUBLIC_ROUTES "
+                "(exact 'METHOD /path' entries, e.g. 'POST /v1/messages')"
+            )
         return None
-    out = []
+    out = set()
     for part in raw.split(","):
-        prefix = part.strip().rstrip("/")
-        if not prefix:
+        part = part.strip()
+        if not part:
             continue
-        if not prefix.startswith("/"):
-            raise ValueError(f"SANITIZER_PUBLIC_PATHS entry {part!r} must start with '/'")
-        out.append(prefix)
-    return tuple(out)
+        bits = part.split()
+        if len(bits) != 2:
+            raise ValueError(f"SANITIZER_PUBLIC_ROUTES entry {part!r} must be 'METHOD /path'")
+        method, path = bits[0].upper(), bits[1]
+        if method not in _ROUTE_METHODS:
+            raise ValueError(f"SANITIZER_PUBLIC_ROUTES entry {part!r}: unknown method {bits[0]!r}")
+        segments = path.split("/")
+        if (
+            not path.startswith("/")
+            or path == "/"
+            or any(not _ROUTE_SEGMENT.fullmatch(seg) or seg in (".", "..") for seg in segments[1:])
+        ):
+            raise ValueError(
+                f"SANITIZER_PUBLIC_ROUTES entry {part!r}: the path must be an exact path of "
+                "unreserved characters (no trailing slash, '..', '%', ';' or wildcard)"
+            )
+        out.add((method, path))
+    if not out:
+        raise ValueError("SANITIZER_PUBLIC_ROUTES is set but names no route")
+    return frozenset(out)
 
 
 def get_internal_token() -> str:

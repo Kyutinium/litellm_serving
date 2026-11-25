@@ -1,14 +1,15 @@
 """Path gate (oh-my-gateway#286): a Messages-only client stays on the Messages API.
 
 Pinned:
-- unset ``SANITIZER_PUBLIC_PATHS`` changes nothing (every path relays as before);
-- set, the listed prefixes and ``/health`` answer; every other path — the relay of
+- unset ``SANITIZER_PUBLIC_ROUTES`` changes nothing (every path relays as before);
+- set, exactly the listed ``METHOD /path`` pairs and ``GET /health`` answer — no
+  sub-path, trailing slash, other method or encoded spelling; every other path — the relay of
   ``/v1/models``, ``/model/info``, LiteLLM admin routes, this proxy's ``/openapi.json``,
   ``/docs``, ``/sanitizer/effort-levels`` — is a plain 404 and never reaches the upstream;
 - the internal header with the right token opens them; a wrong or missing token does not,
   and with no token configured nothing opens (fail closed);
 - non-canonical paths (``..``, ``//``, encoded ``/``/``.``/``\\``) are refused even under a
-  public prefix, so the upstream cannot normalise them into a private path;
+  public route or with the token, so the upstream cannot normalise them into a private path;
 - the internal header is never relayed upstream.
 """
 
@@ -20,6 +21,7 @@ import pytest
 from sanitizer.main import app
 
 TOKEN = "s3cr3t-internal"
+ROUTES = "POST /v1/messages, POST /v1/messages/count_tokens"
 
 
 def run(coro):
@@ -37,12 +39,13 @@ async def _get(path, **headers):
 
 @pytest.fixture
 def gated(monkeypatch):
-    monkeypatch.setenv("SANITIZER_PUBLIC_PATHS", "/v1/messages")
+    monkeypatch.setenv("SANITIZER_PUBLIC_ROUTES", ROUTES)
     monkeypatch.setenv("SANITIZER_INTERNAL_TOKEN", TOKEN)
     monkeypatch.setenv("SANITIZER_EFFORT_PROBE", "false")
 
 
 def test_unset_gate_changes_nothing(upstream, monkeypatch):
+    monkeypatch.delenv("SANITIZER_PUBLIC_ROUTES", raising=False)
     monkeypatch.delenv("SANITIZER_PUBLIC_PATHS", raising=False)
     upstream.set_handler(lambda request: httpx.Response(200, json={"data": []}))
     assert run(_get("/model/info")).status_code == 200
@@ -53,7 +56,8 @@ def test_unset_gate_changes_nothing(upstream, monkeypatch):
 @pytest.mark.parametrize(
     "path",
     ["/v1/models", "/model/info", "/key/generate", "/user/list", "/openapi.json", "/docs", "/redoc",
-     "/sanitizer/effort-levels", "/v1/chat/completions", "/v1/messagesX"],
+     "/sanitizer/effort-levels", "/v1/chat/completions", "/v1/messagesX", "/health/x",
+     "/v1/messages/batches"],
 )
 def test_private_paths_are_404_and_never_reach_the_upstream(upstream, gated, path):
     upstream.set_handler(lambda request: httpx.Response(200, json={"leaked": True}))
@@ -63,7 +67,7 @@ def test_private_paths_are_404_and_never_reach_the_upstream(upstream, gated, pat
     assert upstream.requests == []
 
 
-def test_public_prefix_and_health_answer(upstream, gated):
+def test_public_routes_and_health_answer(upstream, gated):
     upstream.set_handler(lambda request: httpx.Response(200, json={"input_tokens": 1}))
 
     async def _do():
@@ -93,7 +97,7 @@ def test_a_wrong_or_missing_token_does_not_open(upstream, gated, given):
 
 
 def test_without_a_configured_token_nothing_private_opens(upstream, monkeypatch):
-    monkeypatch.setenv("SANITIZER_PUBLIC_PATHS", "/v1/messages")
+    monkeypatch.setenv("SANITIZER_PUBLIC_ROUTES", ROUTES)
     monkeypatch.delenv("SANITIZER_INTERNAL_TOKEN", raising=False)
     assert run(_get("/v1/models", **{"X-Sanitizer-Internal": ""})).status_code == 404
     assert upstream.requests == []
@@ -122,12 +126,34 @@ def test_non_canonical_paths_are_refused_even_under_a_public_prefix(upstream, ga
     assert upstream.requests == []
 
 
-def test_a_malformed_public_list_is_refused(monkeypatch):
-    from sanitizer.config import get_public_paths
+@pytest.mark.parametrize(
+    "value",
+    ["/v1/messages", "POST v1/messages", "FETCH /v1/messages", "POST /v1/messages/",
+     "POST /v1/messages/*", "POST /v1/%6dessages", "POST /v1/messages;x", "POST /v1/../model/info",
+     "POST /", "POST /v1/messages extra", " , ,"],
+)
+def test_a_malformed_public_list_is_refused(monkeypatch, value):
+    from sanitizer.config import get_public_routes
 
-    monkeypatch.setenv("SANITIZER_PUBLIC_PATHS", "v1/messages")
+    monkeypatch.setenv("SANITIZER_PUBLIC_ROUTES", value)
     with pytest.raises(ValueError):
-        get_public_paths()
+        get_public_routes()
+
+
+def test_the_retired_prefix_variable_is_refused_not_ignored(monkeypatch):
+    from sanitizer.config import get_public_routes
+
+    monkeypatch.delenv("SANITIZER_PUBLIC_ROUTES", raising=False)
+    monkeypatch.setenv("SANITIZER_PUBLIC_PATHS", "/v1/messages")
+    with pytest.raises(ValueError, match="SANITIZER_PUBLIC_ROUTES"):
+        get_public_routes()
+
+
+def test_route_entries_are_parsed_exactly(monkeypatch):
+    from sanitizer.config import get_public_routes
+
+    monkeypatch.setenv("SANITIZER_PUBLIC_ROUTES", "post /v1/messages,  POST   /v1/messages/count_tokens ,")
+    assert get_public_routes() == {("POST", "/v1/messages"), ("POST", "/v1/messages/count_tokens")}
 
 
 @pytest.mark.parametrize(
@@ -148,7 +174,7 @@ def test_the_gate_refuses_non_canonical_scopes(gated, path, raw):
     so this is the only honest way to pin what uvicorn passes through."""
     from sanitizer.access import allowed
 
-    scope = {"type": "http", "path": path, "raw_path": raw, "headers": []}
+    scope = {"type": "http", "method": "POST", "path": path, "raw_path": raw, "headers": []}
     assert allowed(scope) is False
     # ...even with the internal token: a canonical path is required for every caller
     with_token = {**scope, "headers": [(b"x-sanitizer-internal", TOKEN.encode())]}
@@ -156,11 +182,51 @@ def test_the_gate_refuses_non_canonical_scopes(gated, path, raw):
 
 
 @pytest.mark.parametrize(
-    ("path", "expected"),
-    [("/v1/messages", True), ("/v1/messages/", True), ("/v1/messages/count_tokens", True),
-     ("/health", True), ("/v1/messagesX", False), ("/v1", False), ("/", False)],
+    ("method", "path", "raw", "expected"),
+    [
+        ("POST", "/v1/messages", b"/v1/messages", True),
+        ("POST", "/v1/messages", b"/v1/messages?beta=true", True),  # ASGITransport-style raw_path
+        ("POST", "/v1/messages/count_tokens", b"/v1/messages/count_tokens", True),
+        ("GET", "/health", b"/health", True),
+        # exact: no trailing slash, sub-path, other method, case or encoded spelling
+        ("POST", "/v1/messages/", b"/v1/messages/", False),
+        ("POST", "/v1/messages/batches", b"/v1/messages/batches", False),
+        ("GET", "/v1/messages", b"/v1/messages", False),
+        ("PUT", "/v1/messages", b"/v1/messages", False),
+        ("POST", "/V1/messages", b"/V1/messages", False),
+        ("POST", "/v1/messages", b"/v1/%6dessages", False),
+        ("POST", "/v1/messages", b"/v1/messages%20", False),
+        ("POST", "/v1/messages;x", b"/v1/messages;x", False),
+        ("POST", "/v1/messages?x", b"/v1/messages%3Fx", False),
+        ("POST", "/v1/messages/%2e%2e/model/info", b"/v1/messages/%252e%252e/model/info", False),
+        ("HEAD", "/health", b"/health", False),
+        ("GET", "/health/", b"/health/", False),
+        ("GET", "/healthz", b"/healthz", False),
+        ("POST", "/v1", b"/v1", False),
+        ("GET", "/", b"/", False),
+    ],
 )
-def test_public_prefix_matching(gated, path, expected):
+def test_public_route_matching_is_exact(gated, method, path, raw, expected):
     from sanitizer.access import allowed
 
-    assert allowed({"type": "http", "path": path, "raw_path": path.encode(), "headers": []}) is expected
+    scope = {"type": "http", "method": method, "path": path, "raw_path": raw, "headers": []}
+    assert allowed(scope) is expected
+
+
+@pytest.mark.parametrize(
+    ("path", "raw"),
+    [
+        ("/v1/models/%2e%2e", b"/v1/models/%252e%252e"),  # double encoding
+        ("/v1/models?x", b"/v1/models%3Fx"),
+        ("/v1/models#x", b"/v1/models%23x"),
+        ("/v1/models;x", b"/v1/models;x"),
+        ("/v1/models\x00", b"/v1/models%00"),
+        ("/v1/models/\u00e9", b"/v1/models/\xc3\xa9"),
+    ],
+)
+def test_token_requests_must_be_canonical_too(gated, path, raw):
+    from sanitizer.access import allowed
+
+    scope = {"type": "http", "method": "GET", "path": path, "raw_path": raw,
+             "headers": [(b"x-sanitizer-internal", TOKEN.encode())]}
+    assert allowed(scope) is False
