@@ -155,3 +155,35 @@ def get_tool_norm_model_regex() -> re.Pattern[str]:
     return _model_pattern(
         "SANITIZER_TOOL_NORM_MODEL_PATTERN", _DEFAULT_TOOL_NORM_MODEL_PATTERN
     )
+
+
+# -- Path gate (oh-my-gateway#286) --------------------------------------------------
+# The sanitizer relays every path to LiteLLM (``/{path:path}``). A client that only needs
+# the Messages API — an agent session's CLI — could also read ``/v1/models``,
+# ``/model/info`` (backend api_base URLs, token limits), LiteLLM's admin routes and this
+# proxy's own ``/openapi.json`` with the same key. With ``SANITIZER_PUBLIC_PATHS`` set,
+# only those path prefixes stay open; every other path needs the internal header.
+
+INTERNAL_HEADER = "x-sanitizer-internal"
+
+
+def get_public_paths():
+    """``None`` (no gate, the default) or the tuple of public path prefixes."""
+    raw = os.environ.get("SANITIZER_PUBLIC_PATHS", "")
+    if not raw.strip():
+        return None
+    out = []
+    for part in raw.split(","):
+        prefix = part.strip().rstrip("/")
+        if not prefix:
+            continue
+        if not prefix.startswith("/"):
+            raise ValueError(f"SANITIZER_PUBLIC_PATHS entry {part!r} must start with '/'")
+        out.append(prefix)
+    return tuple(out)
+
+
+def get_internal_token() -> str:
+    """The shared secret that opens non-public paths (empty = none can be opened)."""
+    return os.environ.get("SANITIZER_INTERNAL_TOKEN", "").strip()
+

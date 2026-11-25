@@ -20,6 +20,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import StreamingResponse
 
 from .config import (
+    INTERNAL_HEADER,
     get_request_timeout_seconds,
     get_think_output_mode,
     get_tls_verify,
@@ -64,6 +65,8 @@ def _clean_request_headers(headers) -> Dict[str, str]:
     for key, value in headers.items():
         lk = key.lower()
         if lk in _HOP_BY_HOP or lk in ("accept-encoding", "host", "content-length"):
+            continue
+        if lk == INTERNAL_HEADER:  # the path gate's secret stays here (sanitizer.access)
             continue
         out[key] = value
     return out

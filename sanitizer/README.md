@@ -64,6 +64,8 @@ Every other path (`/v1/models`, direct `/v1/chat/completions`, `/v1/embeddings`,
 | `SANITIZER_EFFORT_PROBE` | `true` | At startup, ask the upstream which effort levels each listed model takes (1-token requests, in the background). `false` = learn only from real 400s |
 | `SANITIZER_UPSTREAM_API_KEY` | *(`LITELLM_MASTER_KEY` if set)* | Bearer the probe uses for its own upstream requests |
 | `THINK_OUTPUT_MODE` | `default` | `default` / `none` / `text` / `think_tag` / `bridge` |
+| `SANITIZER_PUBLIC_PATHS` | *(unset = no gate)* | Comma-separated path prefixes anyone with the key may use (e.g. `/v1/messages`). Every other path — the relay of `/v1/models`, `/model/info`, LiteLLM admin routes, and this proxy's `/openapi.json`, `/docs`, `/sanitizer/effort-levels` — answers 404 unless the internal header is present. `/health` is always open. See *Path gate* |
+| `SANITIZER_INTERNAL_TOKEN` | *(unset)* | Secret for the `X-Sanitizer-Internal` header that opens non-public paths for trusted callers (the gateway's model discovery). Unset with the gate on = no private path opens |
 
 ### System-message placement, tool results and KV prefix caching
 
@@ -235,6 +237,31 @@ upstream sees it — and a model or a vLLM/SGLang build that ignores the field
 reasons at its default anyway. Advertise a strong capability upstream only for
 models where the effort has been observed in the request the backend actually
 runs.
+
+### Path gate
+
+The sanitizer relays every path to LiteLLM. An agent session's CLI needs only the
+Messages API, but with the same key it could read `/v1/models` and `/model/info`
+(backend `api_base` URLs, token limits, tier → model mapping), call LiteLLM's admin
+routes, and fetch this proxy's `/openapi.json` — in production a session did exactly
+that (oh-my-gateway#286).
+
+```bash
+SANITIZER_PUBLIC_PATHS=/v1/messages          # covers /v1/messages/count_tokens too
+SANITIZER_INTERNAL_TOKEN=$(openssl rand -hex 32)
+```
+
+- Public prefixes (and `/health`) behave as before. Every other path is a plain 404 that
+  never reaches LiteLLM, unless the request carries `X-Sanitizer-Internal: <token>`.
+- Give the token **only** to trusted server-side callers — the gateway's model discovery
+  (`SANITIZER_INTERNAL_TOKEN` in oh-my-gateway, which blanks it in every CLI child). Never
+  put it where an agent session can read it.
+- Non-canonical paths (`..`, `.`, `//`, a backslash, percent-encoded `/`, `.` or `\`) are
+  refused for every caller: LiteLLM could normalise `/v1/messages/../model/info` into
+  `/model/info` after the prefix check.
+- The internal header is stripped before the request is relayed upstream.
+- Other clients of this sanitizer (an OpenAI-bridge client on `/v1/chat/completions`, a
+  service that lists `/v1/models`) need their path in the public list or the header.
 
 ## Topology
 

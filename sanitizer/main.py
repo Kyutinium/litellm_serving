@@ -13,6 +13,7 @@ import logging
 from fastapi import FastAPI
 
 from . import routes_messages, routes_passthrough
+from .access import PathGate
 from .effort import (
     known_levels,
     level_source,
@@ -22,7 +23,9 @@ from .effort import (
     validate_at_startup,
 )
 from .config import (
+    get_internal_token,
     get_port,
+    get_public_paths,
     get_think_output_mode,
     get_upstream_url,
     is_openai_bridge_enabled,
@@ -32,6 +35,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sanitizer.main")
 
 app = FastAPI(title="LiteLLM Sanitizer", version="0.1.0")
+# Outermost: a Messages-only client never reaches /openapi.json, /docs, effort-levels or
+# the wildcard relay of any other path (sanitizer.access, oh-my-gateway#286).
+app.add_middleware(PathGate)
 
 
 @app.get("/health")
@@ -58,6 +64,15 @@ async def _log_active_config() -> None:
     # A typo in the declared effort vocabulary must not go live as a narrower
     # declaration; refuse to start instead (see sanitizer.effort).
     validate_at_startup()
+    # A malformed gate list must not go live as "no gate" (it raises, refusing to start)
+    public = get_public_paths()
+    if public is not None:
+        logger.info("path gate on: public=%s internal_token=%s", list(public), bool(get_internal_token()))
+        if not get_internal_token():
+            logger.warning(
+                "SANITIZER_PUBLIC_PATHS is set without SANITIZER_INTERNAL_TOKEN: every other path "
+                "(including /v1/models for model discovery) answers 404"
+            )
     logger.info(
         "sanitizer started: port=%d upstream=%s bridge=%s think_mode=%s",
         get_port(),
