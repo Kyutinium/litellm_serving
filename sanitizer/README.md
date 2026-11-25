@@ -267,6 +267,12 @@ SANITIZER_INTERNAL_TOKEN=$(openssl rand -hex 32)
   the gate decoded (rebuilding the URL from the decoded path used to turn `%3F` into a
   query separator and `%2F` into a real `/`). The query string is relayed as sent. The
   Messages route posts to the upstream's fixed `/v1/messages`, as before.
+- **Gate off, too**: the raw relay applies whether or not the gate is on. Ordinary paths
+  (plain, `%20`, UTF-8, `+`, `;`, `//`, a literal `..` that httpx still normalises) reach
+  LiteLLM exactly as before; only percent-encoded reserved characters differ — `%2F`,
+  `%3F`, `%23`, `%2e`, `%25` now arrive encoded instead of decoded (before, `%2e%2e`
+  became a real `..` and `/v1/models%3Fx` a duplicated query). The full table is pinned in
+  `test_access_uvicorn.py::test_gate_off_relay_compatibility`.
 - Upstream redirects are relayed to the client, never followed.
 - The internal header is stripped before the request is relayed upstream.
 - The retired prefix variable `SANITIZER_PUBLIC_PATHS` (never released) refuses startup

@@ -138,7 +138,10 @@ async def passthrough(path: str, request: Request):
     timeout = get_request_timeout_seconds()
 
     url = f"{get_upstream_url()}{_raw_target_path(request, path)}"
-    query = request.url.query
+    # The query as sent (``scope["query_string"]``), not ``request.url.query``:
+    # Starlette rebuilds ``request.url`` from the decoded path, so a ``%3F`` in the
+    # path used to reappear as a second query string.
+    query = (request.scope.get("query_string") or b"").decode("latin-1")
     if query:
         url = f"{url}?{query}"
 

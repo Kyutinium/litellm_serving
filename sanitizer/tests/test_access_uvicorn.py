@@ -258,3 +258,34 @@ def test_an_upstream_redirect_is_relayed_not_followed(stack):
     assert status == 302
     assert hdrs["location"] == "http://169.254.169.254/latest/meta-data"
     assert [s["target"] for s in seen] == ["/redirect-me"]  # one request: not followed
+
+
+# -- gate OFF: what the raw-path relay changed (#39 review: compatibility) ------
+# Ordinary paths are relayed exactly as before. Only percent-encoded reserved
+# characters differ: the old code re-embedded the DECODED path, so LiteLLM saw a
+# different path than the client sent (``%2e%2e`` even became a real ``..`` and
+# climbed out of ``/model``). Literal ``..`` is still normalised by httpx, as before.
+_GATE_OFF = [
+    # (client target, upstream target now, upstream target before this change)
+    ("/v1/models?x=1", "/v1/models?x=1", "/v1/models?x=1"),
+    ("/v1/models/a%20b", "/v1/models/a%20b", "/v1/models/a%20b"),
+    ("/v1/models/caf%C3%A9", "/v1/models/caf%C3%A9", "/v1/models/caf%C3%A9"),
+    ("/v1/models/a+b", "/v1/models/a+b", "/v1/models/a+b"),
+    ("/v1/models;p=1", "/v1/models;p=1", "/v1/models;p=1"),
+    ("/v1//models", "/v1//models", "/v1//models"),
+    ("/model/info/../x", "/model/x", "/model/x"),
+    ("/v1/models/a%2Fb", "/v1/models/a%2Fb", "/v1/models/a/b"),
+    ("/v1/models%3Fx=1", "/v1/models%3Fx=1", "/v1/models?x=1?x=1"),
+    ("/v1/models%23frag", "/v1/models%23frag", "/v1/models"),
+    ("/model/%2e%2e/x", "/model/%2e%2e/x", "/x"),
+    ("/v1/models/%25", "/v1/models/%25", "/v1/models/%"),
+]
+
+
+@pytest.mark.parametrize(("target", "now", "before"), _GATE_OFF)
+def test_gate_off_relay_compatibility(stack, monkeypatch, target, now, before):
+    port, seen = stack
+    monkeypatch.delenv("SANITIZER_PUBLIC_ROUTES")
+    status, _, _ = _raw(port, "GET", target)
+    assert status == 200
+    assert [s["target"] for s in seen] == [now], (target, seen, "before:", before)
