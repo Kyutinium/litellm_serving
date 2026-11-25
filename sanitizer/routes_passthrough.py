@@ -37,7 +37,9 @@ _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
 
 def _make_client(timeout) -> httpx.AsyncClient:
-    return httpx.AsyncClient(verify=get_tls_verify(), timeout=timeout)
+    # Never follow an upstream redirect: relay it, so a Location cannot send the
+    # request (and its credentials) to another origin.
+    return httpx.AsyncClient(verify=get_tls_verify(), timeout=timeout, follow_redirects=False)
 
 
 def _is_chat_completions(path: str) -> bool:
@@ -108,6 +110,22 @@ def _clamped_body(path: str, method: str, body: bytes) -> Optional[bytes]:
         return None
 
 
+def _raw_target_path(request: Request, path: str) -> str:
+    """The path exactly as the client sent it (still percent-encoded).
+
+    Rebuilding the URL from the decoded ``path`` re-interprets it: ``%3F`` became a
+    query separator, ``%2F`` a real ``/`` and ``%23`` a dropped fragment, so LiteLLM
+    routed a different path than the one this proxy (and its path gate) saw. Relaying
+    the raw bytes keeps one decoding — LiteLLM's — of what was checked.
+    """
+    raw = request.scope.get("raw_path")
+    if raw:
+        target = raw.split(b"?", 1)[0].decode("latin-1")  # ASGITransport includes the query
+        if target.startswith("/"):
+            return target
+    return "/" + path
+
+
 @router.api_route("/{path:path}", methods=_METHODS)
 async def passthrough(path: str, request: Request):
     body = await request.body()
@@ -119,8 +137,11 @@ async def passthrough(path: str, request: Request):
     headers = _clean_request_headers(request.headers)
     timeout = get_request_timeout_seconds()
 
-    url = f"{get_upstream_url()}/{path}"
-    query = request.url.query
+    url = f"{get_upstream_url()}{_raw_target_path(request, path)}"
+    # The query as sent (``scope["query_string"]``), not ``request.url.query``:
+    # Starlette rebuilds ``request.url`` from the decoded path, so a ``%3F`` in the
+    # path used to reappear as a second query string.
+    query = (request.scope.get("query_string") or b"").decode("latin-1")
     if query:
         url = f"{url}?{query}"
 
